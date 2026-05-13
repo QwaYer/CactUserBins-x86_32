@@ -21,10 +21,10 @@
 | | |
 |---|---|
 | **Utilities** | **36** standalone programs (see [`Makefile`](Makefile) `APPS`) |
-| **`/bin` vs `/sbin`** | **29** → **`../LocalRepoCactOS/lib/bin/`** · **7** → **`../LocalRepoCactOS/lib/sbin/`** (`SBIN_APPS`: `kill`, `su`, `modload`, `modunload`, `ping`, `dhcp`, `dns`) |
+| **`/bin` vs `/sbin`** | **`LR_BIN`** / **`LR_SBIN`** passed to **`make install`** (staging dirs under **LocalRepo**) |
 | **Shared objects** | **`common/ex_*.c`** compiled once; each link pulls **`start.o`** + **one** `*/main.o` + all **`common/*.o`** with **`--gc-sections`** so unused entrypoints are dropped |
 | **Load address** | PIE **ET_DYN** at **`0x08000000`** ([`link.ld`](link.ld)) — same family as **cactsole** / **cgoct** |
-| **Headers** | **`../Cactsole-x86_32/include`** (shared with shell builtin declarations / help text split) |
+| **Headers** | **`CACTSOLEINC`** — path to **Cactsole** `include/` (set by **CactOS** or manually) |
 
 ---
 
@@ -34,37 +34,27 @@
 |-----------|------|
 | **[CactLib-x86_32](https://github.com/QwaYer/CactLib-x86_32)** | **`libc.so`** + **`build/pic/start.o`** — required for every link line |
 | **[Cactsole-x86_32](https://github.com/QwaYer/Cactsole-x86_32)** | Interactive shell; heavy builtins live here as **ELFs** under **`/bin`** (see [`builtins/files_help.c`](../Cactsole-x86_32/src/builtins/files_help.c) vs **`common/ex_*.c`**) |
-| **[LocalRepoCactOS](../LocalRepoCactOS)** | **`make userbins`** → **`make -C CactUserBins-x86_32 install`** before **`cctkfs.img`** is packed |
+| **[LocalRepoCactOS](../LocalRepoCactOS)** | **`make userbins`** → **`make install`** here before **`cctkfs.img`** is packed |
+| **[CactOS-x86_32](https://github.com/QwaYer/CactOS-x86_32)** | **Workspace integrator** — sets **`CACTLIB`**, **`CACTSOLEINC`**, **`LR_*`**, then **`LocalRepo`** + **kernel** + **CactBridge** |
 | **[CactKernel-x86_32](https://github.com/QwaYer/CactKernel-x86_32)** | **binfs** / **sbinfs** overlay **`/bin/*`** and **`/sbin/*`** from the **cctkfs** module on top of disk-backed FS |
 
 ---
 
 ## 🔨 Building
 
-**Prerequisites**
+**Recommended — full workspace**
 
-| Tool | Notes |
-|------|-------|
-| `gcc -m32` | Multilib **`gcc-multilib`** on amd64 |
-| `ld -m elf_i386` | **`-pie --no-dynamic-linker --gc-sections`** |
-| **`../CactLib-x86_32`** | Builds **`libc.so`** and **`start.o`** via the top-level `all` prerequisite |
+**[CactOS-x86_32](https://github.com/QwaYer/CactOS-x86_32)** runs **`make install`** here with **`CACTLIB`**, **`CACTSOLEINC`**, **`LR_BIN`**, **`LR_SBIN`** set.
 
-**Targets**
+**Standalone — this repository**
 
 ```sh
-make -j"$(nproc)"        # build everything under build/bin/
-make install             # copy into ../LocalRepoCactOS/lib/bin and lib/sbin
-make userbins            # alias for install (used by LocalRepoCactOS)
-make clean               # remove objects and build/bin/
+make -j"$(nproc)" install   # auto-detects all siblings
+make install                 # copy ELFs into LR_BIN / LR_SBIN
+make clean
 ```
 
-**Typical workspace flow**
-
-```sh
-make -C ../CactLib-x86_32
-make -C ../CactUserBins-x86_32 install
-make -C ../LocalRepoCactOS          # repack cctkfs.img
-```
+Override any path if needed: `make CACTLIB=/custom/path install`.
 
 ---
 

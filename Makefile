@@ -1,9 +1,26 @@
-# CactUserBins-x86_32 — отдельный ELF на утилиту; общие реализации в common/.
-# Линкуем все common/*.o + --gc-sections: лишние entrypoints выкидываются.
+ROOT := $(abspath .)
 
-ROOT        := $(abspath .)
-CACTLIB     := $(abspath ../CactLib-x86_32)
-CACTSOLEINC := $(abspath ../Cactsole-x86_32/include)
+CACTLIB ?= $(abspath ../CactLib-x86_32)
+CACTSOLEINC ?= $(abspath ../Cactsole-x86_32/include)
+LR_BIN ?= $(abspath ../LocalRepoCactOS/lib/bin)
+LR_SBIN ?= $(abspath ../LocalRepoCactOS/lib/sbin)
+
+_ACTIVE := $(filter-out clean,$(or $(MAKECMDGOALS),all))
+
+ifneq ($(_ACTIVE),)
+ifndef CACTLIB
+$(error Set CACTLIB to the libc project root)
+endif
+ifndef CACTSOLEINC
+$(error Set CACTSOLEINC to the shell headers directory (include/))
+endif
+ifndef LR_BIN
+$(error Set LR_BIN to the staging bin directory for install)
+endif
+ifndef LR_SBIN
+$(error Set LR_SBIN to the staging sbin directory for install)
+endif
+endif
 
 CC      := gcc
 LD      := ld
@@ -27,7 +44,6 @@ APPS := pwd ls mkdir rmdir tch rm cat wrt stat mv ln readlink \
         echo true false whoami id chmod chown version \
         nconn net ping dhcp dns
 
-# FHS-style split: cctkfs /sbin/* (sbinfs) vs /bin/* (binfs)
 SBIN_APPS := kill su modload modunload ping dhcp dns
 BIN_APPS  := $(filter-out $(SBIN_APPS),$(APPS))
 
@@ -38,7 +54,7 @@ BINS := $(patsubst %,$(BUILDD)/%,$(APPS))
 all: $(LIBC_SO) $(START_O) $(COMMON_O) $(BINS)
 
 $(LIBC_SO) $(START_O):
-	$(MAKE) -C $(CACTLIB)
+	@test -f $(LIBC_SO) && test -f $(START_O) || (echo >&2 "Missing libc — build libc first (CACTLIB=$(CACTLIB))"; exit 1)
 
 $(ROOT)/common/%.o: $(ROOT)/common/%.c
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -52,16 +68,12 @@ $(BUILDD):
 $(BUILDD)/%: %/main.o $(COMMON_O) $(START_O) $(LIBC_SO) | $(BUILDD)
 	$(LD) $(LDFLAGS) $(START_O) $< $(COMMON_O) $(LIBC_SO) -o $@
 
-LR_BIN  := $(abspath ../LocalRepoCactOS/lib/bin)
-LR_SBIN := $(abspath ../LocalRepoCactOS/lib/sbin)
-
 install: all
 	@mkdir -p $(LR_BIN) $(LR_SBIN)
 	@for f in $(SBIN_APPS); do rm -f $(LR_BIN)/$$f; done
 	cp -f $(patsubst %,$(BUILDD)/%,$(BIN_APPS)) $(LR_BIN)/
 	cp -f $(patsubst %,$(BUILDD)/%,$(SBIN_APPS)) $(LR_SBIN)/
 
-# Совместимость с LocalRepoCactOS (цель userbins)
 userbins: install
 
 clean:
