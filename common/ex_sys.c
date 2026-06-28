@@ -12,6 +12,8 @@
 #include <string.h>
 #include <signal.h>
 #include <time.h>
+#include <fcntl.h>
+#include <dirent.h>
 
 int cact_ub_clear(char **argv, int argc) {
     (void)argv; (void)argc;
@@ -162,31 +164,162 @@ int cact_ub_free(char **argv, int argc) {
 
 int cact_ub_fetch(char **argv, int argc) {
     (void)argv; (void)argc;
-    static const char logo[] =
-        "\033[36m"
-        "  _                 \n"
-        " | |   _   ___  __  \n"
-        " | |  | | | \\ \\/ /  \n"
-        " | |__| |_| |>  <   \n"
-        " |_____\\__,_/_/\\_\\  \n"
-        "\033[0m\n";
-    static const char shell_line[] =
-        "\033[33mShell :\033[0m cactsole " CACTSOLE_VERSION "\n";
-    static const char kernel_line[] =
-        "\033[33mKernel:\033[0m Cact x86_32\n";
-    static const char arch_line[] =
-        "\033[33mArch  :\033[0m i686\n";
-    static const char user_label[] =
-        "\033[33mUser  :\033[0m uid=";
-    write(STDOUT_FILENO, logo, sizeof(logo) - 1);
-    write(STDOUT_FILENO, kernel_line, sizeof(kernel_line) - 1);
-    write(STDOUT_FILENO, shell_line, sizeof(shell_line) - 1);
-    write(STDOUT_FILENO, arch_line, sizeof(arch_line) - 1);
-    char buf[16];
-    uid_t uid = getuid();
-    write(STDOUT_FILENO, user_label, sizeof(user_label) - 1);
-    itoa((int)uid, buf); write(STDOUT_FILENO, buf, strlen(buf));
-    write(STDOUT_FILENO, "\n", 1);
+
+    static const char *logo[] = {
+        "     |_|_|           ",
+        "     \\_|||;;_/       ",
+        "    \\d||%||%:b/      ",
+        "   \\d~|dO%|i::b/     ",
+        "  ._H||dSf|||%::H_.  ",
+        "  ._H@|dLF|}|;::H_.  ",
+        "  ._H||dXFt||;.:H_.  ",
+        "  ._?|{|P|||/;:.P_.  ",
+        "   ._Hy||t|||;:H_.   ",
+        "   ._?|x||T|;i:P_.   ",
+        "    ._H||i||;:H_.    ",
+        "    ._H|\"|||;:H_.    ",
+        " .=================.  ",
+        "|;;|#H#|;;;;;;;;: |  ",
+        ".=================.   ",
+        " |;|#H#|;;;;;;;: |   ",
+        "  |;|#H#|;;;;;: |    ",
+        "  |;|#H#|;;;;;: |    ",
+        "   |;|#H#|;;;: |     ",
+        "   |;|#H#|;;;: |     ",
+        "    |;|#H#|;: |      ",
+        "     =========       ",
+        NULL
+    };
+
+    char lines[7][80];
+    int n = 0;
+
+    {
+        const char *s = "\033[33mOS\033[0m: Cact OS";
+        int sl = strlen(s);
+        memcpy(lines[n], s, sl); lines[n][sl] = '\0'; n++;
+    }
+    {
+        const char *s = "\033[33mKernel\033[0m: Cact x86_32";
+        int sl = strlen(s);
+        memcpy(lines[n], s, sl); lines[n][sl] = '\0'; n++;
+    }
+    {
+        const char *s = "\033[33mUptime\033[0m: ";
+        int sl = strlen(s);
+        memcpy(lines[n], s, sl);
+        int pos = sl;
+        struct timespec ts;
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        long total = ts.tv_sec;
+        long d = total / 86400; total %= 86400;
+        int h = (int)(total / 3600); total %= 3600;
+        int m = (int)(total / 60);
+        if (d > 0) {
+            char num[16]; itoa((int)d, num);
+            int nd = strlen(num);
+            memcpy(lines[n] + pos, num, nd); pos += nd;
+            lines[n][pos++] = 'd';
+            lines[n][pos++] = ' ';
+        }
+        {
+            char num[16]; itoa(h, num);
+            int nh = strlen(num);
+            memcpy(lines[n] + pos, num, nh); pos += nh;
+            lines[n][pos++] = ':';
+            if (m < 10) lines[n][pos++] = '0';
+            itoa(m, num);
+            int nm = strlen(num);
+            memcpy(lines[n] + pos, num, nm); pos += nm;
+        }
+        lines[n][pos] = '\0'; n++;
+    }
+    {
+        int pkg = 0;
+        int fd = open("/bin", O_RDONLY, 0);
+        if (fd >= 0) {
+            struct dirent buf[32];
+            int r;
+            while ((r = getdents(fd, buf, sizeof(buf))) > 0) {
+                int cnt = r / (int)sizeof(struct dirent);
+                for (int i = 0; i < cnt; i++)
+                    if (buf[i].d_name[0] != '.') pkg++;
+            }
+            close(fd);
+        }
+        fd = open("/sbin", O_RDONLY, 0);
+        if (fd >= 0) {
+            struct dirent buf[32];
+            int r;
+            while ((r = getdents(fd, buf, sizeof(buf))) > 0) {
+                int cnt = r / (int)sizeof(struct dirent);
+                for (int i = 0; i < cnt; i++)
+                    if (buf[i].d_name[0] != '.') pkg++;
+            }
+            close(fd);
+        }
+        char num[16]; itoa(pkg, num);
+        const char *pfx = "\033[33mPackages\033[0m: ";
+        int pl = strlen(pfx);
+        memcpy(lines[n], pfx, pl);
+        memcpy(lines[n] + pl, num, strlen(num) + 1); n++;
+    }
+    {
+        const char *s = "\033[33mShell\033[0m: cactsole ";
+        int sl = strlen(s);
+        memcpy(lines[n], s, sl);
+        memcpy(lines[n] + sl, CACTSOLE_VERSION, strlen(CACTSOLE_VERSION) + 1); n++;
+    }
+    {
+        uid_t uid = getuid();
+        char num[16]; itoa((int)uid, num);
+        const char *pfx = "\033[33mUser\033[0m: uid=";
+        int pl = strlen(pfx);
+        memcpy(lines[n], pfx, pl);
+        memcpy(lines[n] + pl, num, strlen(num) + 1); n++;
+    }
+
+    int lw = 0;
+    for (int k = 0; logo[k]; k++) {
+        int sl = (int)strlen(logo[k]);
+        if (sl > lw) lw = sl;
+    }
+
+    int i = 0;
+    while (logo[i]) {
+        char buf[128];
+        int pos = 0;
+        const char *col = (i < 12) ? "\033[32m" : "\033[33m";
+        memcpy(buf + pos, col, 5); pos += 5;
+        int llen = (int)strlen(logo[i]);
+        memcpy(buf + pos, logo[i], llen); pos += llen;
+        memcpy(buf + pos, "\033[0m", 4); pos += 4;
+        for (int s = llen; s < lw; s++)
+            buf[pos++] = ' ';
+        if (i < n) {
+            buf[pos++] = ' ';
+            buf[pos++] = ' ';
+            int sl = (int)strlen(lines[i]);
+            memcpy(buf + pos, lines[i], sl); pos += sl;
+        }
+        buf[pos++] = '\r';
+        buf[pos++] = '\n';
+        write(STDOUT_FILENO, buf, pos);
+        i++;
+    }
+    while (i < n) {
+        char buf[128];
+        int pos = 0;
+        for (int s = 0; s < lw + 2; s++)
+            buf[pos++] = ' ';
+        int sl = (int)strlen(lines[i]);
+        memcpy(buf + pos, lines[i], sl); pos += sl;
+        buf[pos++] = '\r';
+        buf[pos++] = '\n';
+        write(STDOUT_FILENO, buf, pos);
+        i++;
+    }
+
     return 0;
 }
 
