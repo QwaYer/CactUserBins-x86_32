@@ -14,7 +14,8 @@
 #include <stddef.h>
 
 #include <socket.h>
-#include <syscall.h>
+#include <nodeio.h>
+#include <ioctl_abi.h>
 #include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
@@ -199,8 +200,8 @@ int cact_ub_ping(char **argv, int argc) {
     w("PING "); print_ipv4_h(ip_h); w(":\n");
     uint16_t id = (uint16_t)getpid();
     for (int i = 0; i < count; i++) {
-        int rc = (int)__syscall3(SYS_PING_ECHO, (uintptr_t)ip_h,
-                                 (uintptr_t)id, (uintptr_t)(i + 1));
+        cact_ping_arg_t pa = { .dst_ip = ip_h, .id = id, .seq = (uint32_t)(i + 1) };
+        int rc = nio_dev_cmd("/dev/net", CACT_NETCTL_PING, &pa);
         if (rc < 0) {
             we("ping: send failed\n");
             return 1;
@@ -460,7 +461,7 @@ int cact_ub_dhcp(char **argv, int argc) {
         .t1_s = t1_s,
         .t2_s = t2_s,
     };
-    int rc = (int)__syscall1(SYS_NETCFG_SET, (uintptr_t)&cfg);
+    int rc = nio_dev_cmd("/dev/net", CACT_NETCTL_NETCFG, &cfg);
     if (rc < 0) {
         we("dhcp: failed to apply config in kernel\n");
         close(fd);

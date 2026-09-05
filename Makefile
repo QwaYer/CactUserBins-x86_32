@@ -1,9 +1,9 @@
 ROOT := $(abspath .)
 
-CACTLIB ?= $(abspath ../CactLib-x86_32)
+CACTLIB ?= $(abspath ../CactLibc-x86_32)
 CACTSOLEINC ?= $(abspath ../Cactsole-x86_32/include)
-LR_BIN ?= $(abspath ../LocalRepoCactOS/lib/bin)
-LR_SBIN ?= $(abspath ../LocalRepoCactOS/lib/sbin)
+LR_BIN ?= $(abspath ../LocalRepoCactOS-x86_32/lib/bin)
+LR_SBIN ?= $(abspath ../LocalRepoCactOS-x86_32/lib/sbin)
 
 _ACTIVE := $(filter-out clean,$(or $(MAKECMDGOALS),all))
 
@@ -31,7 +31,7 @@ CFLAGS := -m32 -ffreestanding -fPIE -fno-stack-protector -nostdlib \
           -ffunction-sections -fdata-sections \
           -I$(CACTSOLEINC) -I$(CACTLIB)/include -Wall -Wextra
 
-LDFLAGS := -m elf_i386 -pie --no-dynamic-linker --hash-style=both \
+LDFLAGS := -m elf_i386 -pie --dynamic-linker=/lib/ld.so --hash-style=both \
            -nostdlib --gc-sections -T $(ROOT)/link.ld
 
 COMMON_C := $(wildcard $(ROOT)/common/ex_*.c)

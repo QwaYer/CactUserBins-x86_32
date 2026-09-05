@@ -88,7 +88,7 @@ int cact_ub_rm(char **argv, int argc) {
     if (argc < 2) { write(STDERR_FILENO, "usage: rm FILE...\n", 18); return 1; }
     int i, ret = 0;
     for (i = 1; i < argc; i++) {
-        if (__syscall1(SYS_DELETE, (int)argv[i]) != 0) {
+        if (unlink(argv[i]) != 0) {
             write(STDERR_FILENO, "rm: ", 4);
             write(STDERR_FILENO, argv[i], strlen(argv[i]));
             write(STDERR_FILENO, ": failed\n", 9);
@@ -199,8 +199,8 @@ int cact_ub_ln(char **argv, int argc) {
         return 1;
     }
     int r = soft
-        ? __syscall2(SYS_SYMLINK, (int)argv[base], (int)argv[base + 1])
-        : __syscall2(SYS_LINK,    (int)argv[base], (int)argv[base + 1]);
+        ? symlink(argv[base], argv[base + 1])
+        : link(argv[base], argv[base + 1]);
     if (r != 0) {
         write(STDERR_FILENO, "ln: failed\n", 11);
         return 1;
@@ -211,7 +211,7 @@ int cact_ub_ln(char **argv, int argc) {
 int cact_ub_readlink(char **argv, int argc) {
     if (argc < 2) { write(STDERR_FILENO, "usage: readlink PATH\n", 21); return 1; }
     char buf[512];
-    int n = __syscall3(SYS_READLINK, (int)argv[1], (int)buf, (int)(sizeof(buf) - 1));
+    int n = (int)readlink(argv[1], buf, sizeof(buf) - 1);
     if (n < 0) {
         write(STDERR_FILENO, "readlink: failed\n", 17);
         return 1;
