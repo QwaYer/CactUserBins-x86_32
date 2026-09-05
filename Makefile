@@ -25,7 +25,7 @@ endif
 CC      := gcc
 LD      := ld
 START_O := $(CACTLIB)/build/pic/start.o
-LIBC_SO := $(CACTLIB)/libc.so
+LIBC_SO := $(CACTLIB)/clibc.so
 
 CFLAGS := -m32 -ffreestanding -fPIE -fno-stack-protector -nostdlib \
           -ffunction-sections -fdata-sections \

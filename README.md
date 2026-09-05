@@ -3,14 +3,14 @@
 <p align="center">
   <img src="https://img.shields.io/badge/arch-i686-red.svg?style=for-the-badge" alt="Arch: i686">
   <img src="https://img.shields.io/badge/language-C-orange.svg?style=for-the-badge" alt="Language: C">
-  <img src="https://img.shields.io/badge/link-PIE%20%2B%20libc.so-purple.svg?style=for-the-badge" alt="PIE + libc.so">
+  <img src="https://img.shields.io/badge/link-PIE%20%2B%20clibc.so-purple.svg?style=for-the-badge" alt="PIE + clibc.so">
   <img src="https://img.shields.io/badge/layout-one%20ELF%20per%20tool-blue.svg?style=for-the-badge" alt="One ELF per tool">
   <img src="https://img.shields.io/badge/tools-36-green.svg?style=for-the-badge" alt="36 tools">
   <img src="https://img.shields.io/badge/install-LocalRepoCactOS-0369a1.svg?style=for-the-badge" alt="install → LocalRepoCactOS">
 </p>
 
 <p align="center">
-  A <strong>userspace tool suite</strong> for <strong>Cact OS</strong>: one <strong>small PIE ELF</strong> per command, shared implementations in <strong><code>common/</code></strong>, linked with <strong><code>libc.so</code></strong> from <strong>CactLib</strong>.<br>
+  A <strong>userspace tool suite</strong> for <strong>Cact OS</strong>: one <strong>small PIE ELF</strong> per command, shared implementations in <strong><code>common/</code></strong>, linked with <strong><code>clibc.so</code></strong> from <strong>CactLib</strong>.<br>
   Built artefacts land under <strong><code>build/bin/</code></strong>; <strong><code>make install</code></strong> stages them into <strong><code>LocalRepoCactOS/lib/bin</code></strong> and <strong><code>lib/sbin</code></strong> for <strong>cctkfs</strong> packing.
 </p>
 
@@ -32,7 +32,7 @@
 
 | Component | Role |
 |-----------|------|
-| **[CactLib-x86_32](https://github.com/QwaYer/CactLib-x86_32)** | **`libc.so`** + **`build/pic/start.o`** — required for every link line |
+| **[CactLib-x86_32](https://github.com/QwaYer/CactLib-x86_32)** | **`clibc.so`** + **`build/pic/start.o`** — required for every link line |
 | **[Cactsole-x86_32](https://github.com/QwaYer/Cactsole-x86_32)** | Interactive shell; heavy builtins live here as **ELFs** under **`/bin`** (see [`builtins/files_help.c`](../Cactsole-x86_32/src/builtins/files_help.c) vs **`common/ex_*.c`**) |
 | **[LocalRepoCactOS](../LocalRepoCactOS)** | **`make userbins`** → **`make install`** here before **`cctkfs.img`** is packed |
 | **[CactOS-x86_32](https://github.com/QwaYer/CactOS-x86_32)** | **Workspace integrator** — sets **`CACTLIB`**, **`CACTSOLEINC`**, **`LR_*`**, then **`LocalRepo`** + **kernel** + **CactBridge** |
