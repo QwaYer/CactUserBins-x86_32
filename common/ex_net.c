@@ -278,17 +278,6 @@ static int dhcp_get_opt_u8(const uint8_t *opts, int opts_len, uint8_t key, uint8
     return -1;
 }
 
-typedef struct {
-    uint32_t ip_host;
-    uint32_t netmask_host;
-    uint32_t gateway_host;
-    uint32_t dns_host;
-    uint32_t dhcp_server_host;
-    uint32_t lease_s;
-    uint32_t t1_s;
-    uint32_t t2_s;
-} netcfg_args_t;
-
 static uint32_t g_dns_ip_h = 0x08080808u;
 
 int cact_ub_dhcp(char **argv, int argc) {
@@ -451,16 +440,12 @@ int cact_ub_dhcp(char **argv, int argc) {
         return 1;
     }
 
-    netcfg_args_t cfg = {
-        .ip_host = yiaddr_h,
-        .netmask_host = subnet ? subnet : 0xFFFFFF00u,
-        .gateway_host = router,
-        .dns_host = dns ? dns : g_dns_ip_h,
-        .dhcp_server_host = server_id,
-        .lease_s = lease_s,
-        .t1_s = t1_s,
-        .t2_s = t2_s,
-    };
+    cact_netcfg_arg_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.ip_host       = yiaddr_h;
+    cfg.netmask_host  = subnet ? subnet : 0xFFFFFF00u;
+    cfg.gateway_host  = router;
+    cfg.dns_host      = dns ? dns : g_dns_ip_h;
     int rc = nio_dev_cmd("/dev/net", CACT_NETCTL_NETCFG, &cfg);
     if (rc < 0) {
         we("dhcp: failed to apply config in kernel\n");
@@ -473,9 +458,9 @@ int cact_ub_dhcp(char **argv, int argc) {
     w("dhcp: mask="); print_ipv4_h(cfg.netmask_host); w("\n");
     if (cfg.gateway_host) { w("dhcp: gw="); print_ipv4_h(cfg.gateway_host); w("\n"); }
     if (cfg.dns_host) { w("dhcp: dns="); print_ipv4_h(cfg.dns_host); w("\n"); }
-    if (cfg.lease_s) { w("dhcp: lease="); wn((int)cfg.lease_s); w("s\n"); }
-    if (cfg.t1_s) { w("dhcp: t1="); wn((int)cfg.t1_s); w("s\n"); }
-    if (cfg.t2_s) { w("dhcp: t2="); wn((int)cfg.t2_s); w("s\n"); }
+    if (lease_s) { w("dhcp: lease="); wn((int)lease_s); w("s\n"); }
+    if (t1_s) { w("dhcp: t1="); wn((int)t1_s); w("s\n"); }
+    if (t2_s) { w("dhcp: t2="); wn((int)t2_s); w("s\n"); }
 
     close(fd);
     return 0;
@@ -623,5 +608,373 @@ int cact_ub_dns(char **argv, int argc) {
 
     we("dns: timeout\n");
     close(fd);
+    return 1;
+}
+
+/* ────────────────────────────────────────────────────────────────────────── */
+/*  ip  — Linux-подобная утилита для адресов/маршрутов одной сетевой карты   */
+/*                                                                           */
+/*    ip addr show [dev IF]     ip addr [dev IF]                             */
+/*    ip addr add A[/P] dev IF  ip addr del A[/P] dev IF                     */
+/*    ip addr flush [dev IF]                                                 */
+/*    ip link show [dev IF]                                                  */
+/*    ip route show                                                          */
+/*    ip route add default via GW   ip route del default                     */
+/*                                                                           */
+/* Управление идёт через /dev/net (CACT_NETCTL_NETCFG / _GET).               */
+/* ────────────────────────────────────────────────────────────────────────── */
+
+#define IP_IFACE "eth0"
+
+static int ip_prefix_to_mask(int prefix, uint32_t *mask) {
+    if (prefix < 0 || prefix > 32) return -1;
+    *mask = (prefix == 0) ? 0u : (0xFFFFFFFFu << (32 - prefix));
+    return 0;
+}
+
+static int ip_mask_to_prefix(uint32_t mask) {
+    int n = 0;
+    while (mask) {
+        if (mask & 1) n++;
+        mask >>= 1;
+    }
+    return n;
+}
+
+static void ip_print_mac(const uint8_t *mac) {
+    char b[4];
+    for (int i = 0; i < 6; i++) {
+        uint8_t hi = (uint8_t)(mac[i] >> 4), lo = (uint8_t)(mac[i] & 0xF);
+        b[0] = (char)(hi < 10 ? '0' + hi : 'a' + hi - 10);
+        b[1] = (char)(lo < 10 ? '0' + lo : 'a' + lo - 10);
+        b[2] = '\0';
+        w(b);
+        if (i < 5) w(":");
+    }
+}
+
+/* Сетевое число (host order) -> адрес в buf. */
+static void ip_fmt_ipv4(uint32_t v, char *buf, int cap) {
+    int p[4] = {(int)((v >> 24) & 0xFF), (int)((v >> 16) & 0xFF),
+                (int)((v >> 8) & 0xFF), (int)(v & 0xFF)};
+    int n = 0;
+    for (int i = 0; i < 4; i++) {
+        if (i) buf[n++] = '.';
+        char t[4];
+        itoa(p[i], t);
+        for (char *s = t; *s && n < cap - 1; s++) buf[n++] = *s;
+    }
+    buf[n] = '\0';
+}
+
+static int ip_get_cfg(cact_netcfg_get_t *g) {
+    int rc = nio_dev_cmd("/dev/net", CACT_NETCTL_NETCFG_GET, g);
+    if (rc < 0) {
+        we("ip: NETCFG_GET failed rc=");
+        wne(rc);
+        we("\n");
+        return -1;
+    }
+    return 0;
+}
+
+static int ip_set_cfg(const cact_netcfg_arg_t *a) {
+    int rc = nio_dev_cmd("/dev/net", CACT_NETCTL_NETCFG, (void *)a);
+    if (rc < 0) {
+        we("ip: NETCFG failed rc=");
+        wne(rc);
+        we(" (need root?)\n");
+        return -1;
+    }
+    return 0;
+}
+
+static int ip_show_addr(cact_netcfg_get_t *g, int show_link_only) {
+    if (ip_get_cfg(g) < 0) return 1;
+
+    w(IP_IFACE);
+    w(": <");
+    w(g->link_up ? "UP" : "DOWN");
+    w("> mtu 1500\n");
+
+    w("    link/ether ");
+    if (g->link_up) {
+        ip_print_mac(g->mac);
+    } else {
+        w("00:00:00:00:00:00");
+    }
+    w("\n");
+
+    if (show_link_only) return 0;
+
+    char buf[20];
+    if (g->ip_host && g->netmask_host) {
+        int prefix = ip_mask_to_prefix(g->netmask_host);
+        uint32_t bcast = (g->ip_host & g->netmask_host) | ~g->netmask_host;
+        w("    inet ");
+        ip_fmt_ipv4(g->ip_host, buf, sizeof(buf));
+        w(buf);
+        w("/");
+        itoa(prefix, buf);
+        w(buf);
+        w(" brd ");
+        ip_fmt_ipv4(bcast, buf, sizeof(buf));
+        w(buf);
+        w(" scope global ");
+        w(IP_IFACE);
+        w("\n");
+        if (g->gateway_host) {
+            w("    default via ");
+            ip_fmt_ipv4(g->gateway_host, buf, sizeof(buf));
+            w(buf);
+            w(" dev ");
+            w(IP_IFACE);
+            w("\n");
+        }
+        if (g->dns_host) {
+            w("    dns ");
+            ip_fmt_ipv4(g->dns_host, buf, sizeof(buf));
+            w(buf);
+            w("\n");
+        }
+    } else {
+        w("    (no IPv4 address configured)\n");
+    }
+    return 0;
+}
+
+/* Утилиты ip: карта одна (eth0), поэтому «dev IF» при разборе игнорируем,
+ * но если названа чужая карта — ругаемся. */
+static int ip_warn_foreign_dev(char **argv, int argc) {
+    for (int i = 0; i < argc; i++) {
+        if (strcmp(argv[i], "dev") == 0 && i + 1 < argc) {
+            if (strcmp(argv[i + 1], IP_IFACE) != 0) {
+                we("ip: unknown interface `");
+                we(argv[i + 1]);
+                we("` (only ");
+                we(IP_IFACE);
+                we(" exists)\n");
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+static int ip_cmd_addr_show(char **argv, int argc) {
+    if (ip_warn_foreign_dev(argv, argc)) return 1;
+    cact_netcfg_get_t g;
+    return ip_show_addr(&g, 0);
+}
+
+static int ip_cmd_link_show(char **argv, int argc) {
+    if (ip_warn_foreign_dev(argv, argc)) return 1;
+    cact_netcfg_get_t g;
+    return ip_show_addr(&g, 1);
+}
+
+static int ip_parse_addr_prefix(const char *s, uint32_t *ip, int *prefix) {
+    char tmp[32];
+    int n = 0;
+    const char *slash = 0;
+    for (const char *p = s; *p && n < (int)sizeof(tmp) - 1; p++) {
+        if (*p == '/') slash = tmp + n;
+        tmp[n++] = *p;
+    }
+    tmp[n] = '\0';
+    uint32_t a;
+    if (parse_ipv4(tmp, &a) < 0) return -1;
+    int pre = 32;
+    if (slash) {
+        pre = atoi(slash + 1);
+        if (pre < 0 || pre > 32) return -1;
+    }
+    *ip = a;
+    *prefix = pre;
+    return 0;
+}
+
+static int ip_cmd_addr_add(char **argv, int argc) {
+    if (argc < 1) {
+        we("usage: ip addr add IP[/PREFIX] dev eth0\n");
+        return 1;
+    }
+    uint32_t ip_h;
+    int prefix;
+    if (ip_parse_addr_prefix(argv[0], &ip_h, &prefix) < 0) {
+        we("ip: bad address\n");
+        return 1;
+    }
+    uint32_t mask;
+    if (ip_prefix_to_mask(prefix, &mask) < 0) {
+        we("ip: bad prefix\n");
+        return 1;
+    }
+    cact_netcfg_get_t g;
+    if (ip_get_cfg(&g) < 0) return 1;
+
+    cact_netcfg_arg_t a;
+    a.ip_host       = ip_h;
+    a.netmask_host  = mask;
+    a.gateway_host  = g.gateway_host;   /* маршруты не трогаем */
+    a.dns_host      = g.dns_host;
+    return ip_set_cfg(&a);
+}
+
+static int ip_cmd_addr_del(char **argv, int argc) {
+    if (argc < 1) {
+        we("usage: ip addr del IP[/PREFIX] dev eth0\n");
+        return 1;
+    }
+    uint32_t ip_h;
+    int prefix;
+    if (ip_parse_addr_prefix(argv[0], &ip_h, &prefix) < 0) {
+        we("ip: bad address\n");
+        return 1;
+    }
+    cact_netcfg_get_t g;
+    if (ip_get_cfg(&g) < 0) return 1;
+
+    cact_netcfg_arg_t a;
+    a.ip_host       = 0;                 /* снять адрес */
+    a.netmask_host  = 0;
+    a.gateway_host  = g.gateway_host;
+    a.dns_host      = g.dns_host;
+    return ip_set_cfg(&a);
+}
+
+static int ip_cmd_addr_flush(char **argv, int argc) {
+    (void)argv; (void)argc;
+    cact_netcfg_arg_t a;
+    a.ip_host       = 0;
+    a.netmask_host  = 0;
+    a.gateway_host  = 0;
+    a.dns_host      = 0;
+    return ip_set_cfg(&a);
+}
+
+static int ip_cmd_route_show(char **argv, int argc) {
+    (void)argv; (void)argc;
+    cact_netcfg_get_t g;
+    if (ip_get_cfg(&g) < 0) return 1;
+    char buf[20];
+    if (g.gateway_host) {
+        w("default via ");
+        ip_fmt_ipv4(g.gateway_host, buf, sizeof(buf));
+        w(buf);
+        w(" dev ");
+        w(IP_IFACE);
+        w("\n");
+    } else {
+        w("default via <none> dev ");
+        w(IP_IFACE);
+        w("\n");
+    }
+    return 0;
+}
+
+static int ip_cmd_route_add(char **argv, int argc) {
+    /* ip route add default via GW */
+    if (argc < 3 || strcmp(argv[0], "default") != 0 ||
+        strcmp(argv[1], "via") != 0) {
+        we("usage: ip route add default via GW\n");
+        return 1;
+    }
+    uint32_t gw;
+    if (parse_ipv4(argv[2], &gw) < 0) {
+        we("ip: bad gateway\n");
+        return 1;
+    }
+    cact_netcfg_get_t g;
+    if (ip_get_cfg(&g) < 0) return 1;
+    cact_netcfg_arg_t a;
+    a.ip_host       = g.ip_host;
+    a.netmask_host  = g.netmask_host;
+    a.gateway_host  = gw;
+    a.dns_host      = g.dns_host;
+    return ip_set_cfg(&a);
+}
+
+static int ip_cmd_route_del(char **argv, int argc) {
+    if (argc < 1 || strcmp(argv[0], "default") != 0) {
+        we("usage: ip route del default\n");
+        return 1;
+    }
+    cact_netcfg_get_t g;
+    if (ip_get_cfg(&g) < 0) return 1;
+    cact_netcfg_arg_t a;
+    a.ip_host       = g.ip_host;
+    a.netmask_host  = g.netmask_host;
+    a.gateway_host  = 0;
+    a.dns_host      = g.dns_host;
+    return ip_set_cfg(&a);
+}
+
+static void ip_usage(void) {
+    we("usage: ip [ addr | link | route ] ...\n"
+       "  ip addr show [dev IF] | ip addr add IP[/P] dev IF | "
+       "ip addr del IP[/P] dev IF | ip addr flush [dev IF]\n"
+       "  ip link show [dev IF]\n"
+       "  ip route show | ip route add default via GW | ip route del default\n");
+}
+
+int cact_ub_ip(char **argv, int argc) {
+    if (argc < 2) {
+        ip_usage();
+        return 1;
+    }
+    int base = 1;
+    /* «ip -4 addr show» — опции просто пропускаем */
+    while (base < argc && argv[base][0] == '-') base++;
+    if (base >= argc) {
+        ip_usage();
+        return 1;
+    }
+    const char *obj = argv[base];
+    int sub = base + 1;
+
+    if (strcmp(obj, "addr") == 0 || strcmp(obj, "address") == 0) {
+        if (sub >= argc || strcmp(argv[sub], "show") == 0) {
+            return ip_cmd_addr_show(argv + sub + 1, argc - (sub + 1));
+        }
+        if (strcmp(argv[sub], "add") == 0) {
+            return ip_cmd_addr_add(argv + sub + 1, argc - (sub + 1));
+        }
+        if (strcmp(argv[sub], "del") == 0) {
+            return ip_cmd_addr_del(argv + sub + 1, argc - (sub + 1));
+        }
+        if (strcmp(argv[sub], "flush") == 0) {
+            return ip_cmd_addr_flush(argv + sub + 1, argc - (sub + 1));
+        }
+        ip_usage();
+        return 1;
+    }
+
+    if (strcmp(obj, "link") == 0) {
+        if (sub >= argc || strcmp(argv[sub], "show") == 0) {
+            return ip_cmd_link_show(argv + sub + 1, argc - (sub + 1));
+        }
+        ip_usage();
+        return 1;
+    }
+
+    if (strcmp(obj, "route") == 0) {
+        if (sub >= argc || strcmp(argv[sub], "show") == 0) {
+            return ip_cmd_route_show(argv + sub + 1, argc - (sub + 1));
+        }
+        if (sub + 1 < argc && strcmp(argv[sub], "add") == 0) {
+            return ip_cmd_route_add(&argv[sub + 1], argc - (sub + 1));
+        }
+        if (sub + 1 < argc && strcmp(argv[sub], "del") == 0) {
+            return ip_cmd_route_del(&argv[sub + 1], argc - (sub + 1));
+        }
+        ip_usage();
+        return 1;
+    }
+
+    we("ip: unknown object `");
+    we(obj);
+    we("`\n");
+    ip_usage();
     return 1;
 }

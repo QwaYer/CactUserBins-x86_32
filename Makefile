@@ -42,9 +42,9 @@ BUILDD := $(ROOT)/build/bin
 APPS := pwd ls mkdir rmdir tch rm cat wrt stat mv ln readlink \
         clear date uptime kill su sleep free fetch modload modunload run \
         echo true false whoami id chmod chown version \
-        nconn net ping dhcp dns uxtest
+        nconn net ping dhcp dns ip uxtest
 
-SBIN_APPS := kill su modload modunload ping dhcp dns
+SBIN_APPS := kill su modload modunload ping dhcp dns ip
 BIN_APPS  := $(filter-out $(SBIN_APPS),$(APPS))
 
 BINS := $(patsubst %,$(BUILDD)/%,$(APPS))
