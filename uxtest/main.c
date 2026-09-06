@@ -51,6 +51,75 @@ int main(void) {
         close(sv[1]);
     }
 
+    /* 2) SCM_RIGHTS fd passing over a socketpair */
+    {
+        int sp[2];
+        r = socketpair(AF_UNIX, SOCK_STREAM, 0, sp);
+        CHECK(r == 0, "scm socketpair");
+        if (r == 0) {
+            int pf[2];
+            CHECK(pipe(pf) == 0, "scm pipe");
+            const char data[] = "HIFD";
+            int sendfd = pf[1];
+            unsigned char cbuf[CMSG_SPACE(sizeof(int))];
+            struct iovec iov;
+            struct msghdr mh;
+            struct cmsghdr *c;
+
+            iov.iov_base = (void *)data;
+            iov.iov_len  = 4;
+            memset(&mh, 0, sizeof(mh));
+            mh.msg_iov        = &iov;
+            mh.msg_iovlen     = 1;
+            mh.msg_control    = cbuf;
+            mh.msg_controllen = sizeof(cbuf);
+            c = CMSG_FIRSTHDR(&mh);
+            c->cmsg_len   = CMSG_LEN(sizeof(int));
+            c->cmsg_level = SOL_SOCKET;
+            c->cmsg_type  = SCM_RIGHTS;
+            memcpy(CMSG_DATA(c), &sendfd, sizeof(sendfd));
+            CHECK(sendmsg(sp[1], &mh, 0) == 4, "scm sendmsg data");
+
+            char buf[8];
+            unsigned char rbuf[CMSG_SPACE(4 * sizeof(int))];
+            struct iovec riov;
+            struct msghdr rmh;
+            memset(buf, 0, sizeof(buf));
+            riov.iov_base = buf;
+            riov.iov_len  = sizeof(buf);
+            memset(&rmh, 0, sizeof(rmh));
+            rmh.msg_iov        = &riov;
+            rmh.msg_iovlen     = 1;
+            rmh.msg_control    = rbuf;
+            rmh.msg_controllen = sizeof(rbuf);
+            int got = (int)recvmsg(sp[0], &rmh, 0);
+            CHECK(got == 4 && memcmp(buf, data, 4) == 0, "scm recvmsg data");
+            int nfd = -1;
+            for (c = CMSG_FIRSTHDR(&rmh); c; c = CMSG_NXTHDR(&rmh, c)) {
+                if (c->cmsg_level == SOL_SOCKET && c->cmsg_type == SCM_RIGHTS) {
+                    memcpy(&nfd, CMSG_DATA(c), sizeof(nfd));
+                    break;
+                }
+            }
+            CHECK(nfd >= 0, "scm got fd");
+
+            close(pf[1]);              /* drop the original write end */
+            const char via[] = "viafd";
+            if (nfd >= 0)
+                CHECK(write(nfd, via, 5) == 5, "scm write via fd");
+            {
+                char r2[8];
+                memset(r2, 0, sizeof(r2));
+                CHECK(read(pf[0], r2, 5) == 5 && memcmp(r2, via, 5) == 0,
+                      "scm pipe delivery");
+            }
+            if (nfd >= 0) close(nfd);
+            close(pf[0]);
+            close(sp[0]);
+            close(sp[1]);
+        }
+    }
+
     /* 2) pathname server, same-process loopback */
     struct sockaddr_un sun;
     memset(&sun, 0, sizeof(sun));
