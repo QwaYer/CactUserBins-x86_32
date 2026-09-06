@@ -120,7 +120,7 @@ int cact_ub_nconn(char **argv, int argc) {
     fill_sin(&dst, ip, port);
 
     w("nconn: connect "); print_ipv4_h(ip); w(":"); wn(port); w(" ... ");
-    int rc = connect(fd, &dst, sizeof(dst));
+    int rc = connect(fd, (struct sockaddr *)&dst, sizeof(dst));
     if (rc < 0) {
         w("FAILED rc="); wn(rc); w("\n");
         int err = 0; uint32_t l = sizeof(err);
@@ -298,7 +298,7 @@ int cact_ub_dhcp(char **argv, int argc) {
 
     struct sockaddr_in local;
     fill_sin(&local, 0, 68);
-    if (bind(fd, &local, sizeof(local)) < 0) {
+    if (bind(fd, (struct sockaddr *)&local, sizeof(local)) < 0) {
         perr("dhcp", "bind(68)", -1);
         close(fd);
         return 1;
@@ -323,7 +323,7 @@ int cact_ub_dhcp(char **argv, int argc) {
 
     struct sockaddr_in bcast;
     fill_sin(&bcast, 0xFFFFFFFFu, 67);
-    int sret = sendto(fd, &req, sizeof(req), 0, &bcast, sizeof(bcast));
+    int sret = sendto(fd, &req, sizeof(req), 0, (struct sockaddr *)&bcast, sizeof(bcast));
     if (sret < 0) {
         perr("dhcp", "sendto(discover)", sret);
         close(fd);
@@ -339,7 +339,7 @@ int cact_ub_dhcp(char **argv, int argc) {
         struct dhcp_hdr rep;
         struct sockaddr_in from;
         uint32_t fromlen = sizeof(from);
-        int n = recvfrom(fd, &rep, sizeof(rep), 0, &from, &fromlen);
+        int n = recvfrom(fd, &rep, sizeof(rep), 0, (struct sockaddr *)&from, &fromlen);
         if (n <= 0) {
             sleep(1);
             continue;
@@ -405,7 +405,7 @@ int cact_ub_dhcp(char **argv, int argc) {
     req.opts[oi++] = DHCP_OPT_DNS;
     req.opts[oi++] = DHCP_OPT_END;
 
-    sret = sendto(fd, &req, sizeof(req), 0, &bcast, sizeof(bcast));
+    sret = sendto(fd, &req, sizeof(req), 0, (struct sockaddr *)&bcast, sizeof(bcast));
     if (sret < 0) {
         perr("dhcp", "sendto(request)", sret);
         close(fd);
@@ -418,7 +418,7 @@ int cact_ub_dhcp(char **argv, int argc) {
         struct dhcp_hdr rep;
         struct sockaddr_in from;
         uint32_t fromlen = sizeof(from);
-        int n = recvfrom(fd, &rep, sizeof(rep), 0, &from, &fromlen);
+        int n = recvfrom(fd, &rep, sizeof(rep), 0, (struct sockaddr *)&from, &fromlen);
         if (n <= 0) {
             sleep(1);
             continue;
@@ -566,7 +566,7 @@ int cact_ub_dns(char **argv, int argc) {
 
     struct sockaddr_in dst;
     fill_sin(&dst, dns_ip_h, 53);
-    int sret = sendto(fd, pkt, (uint32_t)off, 0, &dst, sizeof(dst));
+    int sret = sendto(fd, pkt, (uint32_t)off, 0, (struct sockaddr *)&dst, sizeof(dst));
     if (sret < 0) {
         perr("dns", "sendto", sret);
         close(fd);
@@ -576,7 +576,7 @@ int cact_ub_dns(char **argv, int argc) {
     for (int attempt = 0; attempt < 5; attempt++) {
         struct sockaddr_in from;
         uint32_t fromlen = sizeof(from);
-        int n = recvfrom(fd, pkt, sizeof(pkt), 0, &from, &fromlen);
+        int n = recvfrom(fd, pkt, sizeof(pkt), 0, (struct sockaddr *)&from, &fromlen);
         if (n <= 0) {
             sleep(1);
             continue;
