@@ -20,6 +20,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <fcntl.h>
+#include <poll.h>
+#include <signal.h>
 
 /* ────────────────────────────────────────────────────────────────────────── */
 /*  Утилиты вывода                                                            */
@@ -976,5 +979,623 @@ int cact_ub_ip(char **argv, int argc) {
     we(obj);
     we("`\n");
     ip_usage();
+    return 1;
+}
+
+/* ────────────────────────────────────────────────────────────────────────── */
+/*  nc  — простой netcat: двусторонний ретранслятор stdin <-> сокет.          */
+/*                                                                           */
+/*    nc HOST PORT            — TCP-клиент (подключиться и ретранслировать)  */
+/*    nc -l [-p] PORT         — слушать, принять одно соединение, relay      */
+/*                                                                           */
+/*  Реализация: после connect()/accept() процесс раздваивается: ребёнок      */
+/*  гонит stdin -> сокет, родитель гонит сокет -> stdout. Это не требует      */
+/*  poll() на сокетах и честно работает с блокирующими read().                */
+/* ────────────────────────────────────────────────────────────────────────── */
+
+static void nc_usage(void) {
+    fprintf(stderr,
+            "usage: nc HOST PORT\n"
+            "       nc -l [-p PORT]\n"
+            "  relays stdin to the network and the network to stdout\n");
+}
+
+static int nc_xfer_all(int fd, const char *buf, int len) {
+    while (len > 0) {
+        int n = write(fd, buf, (size_t)len);
+        if (n < 0) return -1;
+        if (n == 0) {
+            struct pollfd p;
+            p.fd = fd; p.events = POLLOUT; p.revents = 0;
+            poll(&p, 1, -1);
+            continue;
+        }
+        buf += n;
+        len -= n;
+    }
+    return 0;
+}
+
+static int nc_relay(int sock) {
+    pid_t pid = fork();
+    if (pid < 0) {
+        we("nc: fork failed\n");
+        return 1;
+    }
+    if (pid == 0) {
+        /* child: stdin -> socket */
+        signal(SIGPIPE, SIG_IGN);
+        char buf[1024];
+        for (;;) {
+            int n = read(STDIN_FILENO, buf, sizeof(buf));
+            if (n <= 0) break;
+            if (nc_xfer_all(sock, buf, n) != 0) break;
+        }
+        shutdown(sock, SHUT_WR);
+        _exit(0);
+    }
+    /* parent: socket -> stdout */
+    signal(SIGPIPE, SIG_IGN);
+    char buf[1024];
+    int rc = 0;
+    for (;;) {
+        int n = read(sock, buf, sizeof(buf));
+        if (n < 0) { rc = 1; break; }
+        if (n == 0) break;
+        if (nc_xfer_all(STDOUT_FILENO, buf, n) != 0) { rc = 1; break; }
+    }
+    kill(pid, SIGKILL);
+    {
+        int st;
+        waitpid(pid, &st, 0);
+    }
+    close(sock);
+    return rc;
+}
+
+int cact_ub_nc(char **argv, int argc) {
+    int listen_mode = 0;
+    const char *host = NULL;
+    int port = -1;
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-l") == 0) {
+            listen_mode = 1;
+        } else if (strcmp(argv[i], "-p") == 0 && i + 1 < argc) {
+            port = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "-h") == 0 ||
+                   strcmp(argv[i], "--help") == 0) {
+            nc_usage();
+            return 0;
+        } else if (argv[i][0] == '-' && argv[i][1]) {
+            we("nc: unknown option ");
+            we(argv[i]);
+            we("\n");
+            nc_usage();
+            return 1;
+        } else if (!host) {
+            host = argv[i];
+        } else {
+            port = atoi(argv[i]);
+        }
+    }
+
+    if (listen_mode) {
+        if (port < 0 || port > 65535) { nc_usage(); return 1; }
+        int sfd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        if (sfd < 0) { perr("nc", "socket", sfd); return 1; }
+        int one = 1;
+        setsockopt(sfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+
+        struct sockaddr_in a;
+        fill_sin(&a, 0, (uint16_t)port);
+        if (bind(sfd, (struct sockaddr *)&a, sizeof(a)) < 0) {
+            we("nc: bind port "); wn(port); we(" failed\n");
+            close(sfd);
+            return 1;
+        }
+        if (listen(sfd, 1) < 0) {
+            we("nc: listen failed\n");
+            close(sfd);
+            return 1;
+        }
+        struct sockaddr_in peer;
+        uint32_t peerlen = sizeof(peer);
+        int cs = accept(sfd, (struct sockaddr *)&peer, &peerlen);
+        close(sfd);
+        if (cs < 0) { we("nc: accept failed\n"); return 1; }
+        return nc_relay(cs);
+    }
+
+    if (!host || port < 0) { nc_usage(); return 1; }
+    if (port > 65535) { we("nc: bad port\n"); return 1; }
+
+    uint32_t ip;
+    if (parse_ipv4(host, &ip) != 0 && dns_resolve(host, &ip) != 0) {
+        we("nc: cannot resolve ");
+        we(host);
+        we("\n");
+        return 1;
+    }
+
+    int fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (fd < 0) { perr("nc", "socket", fd); return 1; }
+    struct sockaddr_in dst;
+    fill_sin(&dst, ip, (uint16_t)port);
+    if (connect(fd, (struct sockaddr *)&dst, sizeof(dst)) < 0) {
+        we("nc: connect to ");
+        print_ipv4_h(ip);
+        we(":");
+        wn(port);
+        we(" failed\n");
+        close(fd);
+        return 1;
+    }
+    return nc_relay(fd);
+}
+
+/* ────────────────────────────────────────────────────────────────────────── */
+/*  wget  — микро-HTTP-клиент: GET по TCP, тело ответа в файл.                */
+/*                                                                           */
+/*    wget [-o FILE] [http://]HOST[:PORT][/PATH]                             */
+/*                                                                           */
+/*  Умеет Content-Length, chunked и чтение до закрытия (HTTP/1.0), простые    */
+/*  redirect'ы (Location на http:// или абсолютный путь).  HTTPS не           */
+/*  поддерживается (в CactOS нет TLS-стека для пользователя).                */
+/* ────────────────────────────────────────────────────────────────────────── */
+
+#define W_UA "cact-wget/0.1"
+#define W_REDIR_MAX 5
+
+static int wget_parse_url(const char *s, char *host, size_t hostsz,
+                          int *port, char *path, size_t pathsz) {
+    if (!s || !s[0]) return -1;
+    if (strncmp(s, "https://", 8) == 0) {
+        we("wget: https is not supported (no TLS)\n");
+        return -1;
+    }
+    const char *p = s;
+    if (strncmp(p, "http://", 7) == 0) p += 7;
+
+    size_t hn = 0;
+    while (*p && *p != ':' && *p != '/' && hn < hostsz - 1)
+        host[hn++] = *p++;
+    host[hn] = '\0';
+    if (hn == 0) return -1;
+
+    *port = 80;
+    if (*p == ':') {
+        p++;
+        int v = 0;
+        while (*p >= '0' && *p <= '9') {
+            v = v * 10 + (*p - '0');
+            p++;
+        }
+        if (v <= 0 || v > 65535) return -1;
+        *port = v;
+    }
+    if (*p == '/') {
+        size_t pn = 0;
+        while (*p && pn < pathsz - 1)
+            path[pn++] = *p++;
+        path[pn] = '\0';
+    } else {
+        path[0] = '/';
+        path[1] = '\0';
+    }
+    return 0;
+}
+
+/* Имя файла по умолчанию = последний компонент пути (без ? и #). */
+static void wget_default_name(const char *path, char *out, size_t outsz) {
+    const char *base = path;
+    for (const char *p = path; *p; p++)
+        if (*p == '/') base = p + 1;
+    size_t n = 0;
+    for (const char *p = base; *p && *p != '?' && *p != '#' && n < outsz - 1; p++)
+        out[n++] = *p;
+    out[n] = '\0';
+    if (n == 0) {
+        strncpy(out, "index.html", outsz - 1);
+        out[outsz - 1] = '\0';
+    }
+}
+
+/* Слайс-буфер для ответа: прячем излишек тела за концом заголовков. */
+typedef struct {
+    int fd;
+    unsigned char buf[2048];
+    int start;
+    int end;
+} wbuf_t;
+
+static int wbuf_fill(wbuf_t *b) {
+    if (b->start < b->end) return 1;
+    b->start = b->end = 0;
+    int n = recv(b->fd, b->buf, sizeof(b->buf), 0);
+    if (n <= 0) return n;
+    b->end = n;
+    return 1;
+}
+
+/* Добрать ещё данных: сдвинуть недочитанное в начало и сделать recv. */
+static int wbuf_append(wbuf_t *b) {
+    if (b->start > 0) {
+        memmove(b->buf, b->buf + b->start, (size_t)(b->end - b->start));
+        b->end -= b->start;
+        b->start = 0;
+    }
+    if (b->end >= (int)sizeof(b->buf)) return -1;   /* заголовок слишком длинный */
+    int n = recv(b->fd, b->buf + b->end, sizeof(b->buf) - (size_t)b->end, 0);
+    if (n <= 0) return n;
+    b->end += n;
+    return 1;
+}
+
+/* Прочитать байт; 1 = ok, 0 = EOF, -1 = ошибка. */
+static int wbuf_get(wbuf_t *b, unsigned char *out) {
+    if (b->start == b->end) {
+        int rc = wbuf_fill(b);
+        if (rc <= 0) return rc;
+    }
+    *out = b->buf[b->start++];
+    return 1;
+}
+
+/* Прочитать строку (до \n), вернуть длину без \r\n, -1 при ошибке. */
+static int wbuf_line(wbuf_t *b, char *out, int cap) {
+    int n = 0;
+    for (;;) {
+        unsigned char c;
+        int rc = wbuf_get(b, &c);
+        if (rc <= 0) return -1;
+        if (c == '\n') return n;
+        if (c != '\r' && n < cap - 1) out[n++] = (char)c;
+    }
+}
+
+/* Прочитать N байт тела. */
+static int wbuf_readn(wbuf_t *b, unsigned char *out, int n) {
+    while (n > 0) {
+        if (b->start == b->end) {
+            int rc = wbuf_fill(b);
+            if (rc <= 0) return -1;
+        }
+        int take = b->end - b->start;
+        if (take > n) take = n;
+        memcpy(out, b->buf + b->start, (size_t)take);
+        b->start += take;
+        out += take;
+        n -= take;
+    }
+    return 0;
+}
+
+static int wget_write_all(int fd, const unsigned char *buf, int len) {
+    while (len > 0) {
+        int n = write(fd, buf, (size_t)len);
+        if (n <= 0) return -1;
+        buf += n;
+        len -= n;
+    }
+    return 0;
+}
+
+static int wget_send_request(int fd, const char *host, int port,
+                             const char *path) {
+    char portstr[8];
+    char req[1600];
+    int n;
+    if (port != 80) {
+        itoa(port, portstr);
+        n = snprintf(req, sizeof(req),
+                     "GET %s HTTP/1.1\r\n"
+                     "Host: %s:%s\r\n"
+                     "User-Agent: %s\r\n"
+                     "Accept: */*\r\n"
+                     "Connection: close\r\n\r\n",
+                     path, host, portstr, W_UA);
+    } else {
+        n = snprintf(req, sizeof(req),
+                     "GET %s HTTP/1.1\r\n"
+                     "Host: %s\r\n"
+                     "User-Agent: %s\r\n"
+                     "Accept: */*\r\n"
+                     "Connection: close\r\n\r\n",
+                     path, host, W_UA);
+    }
+    if (n <= 0 || n >= (int)sizeof(req)) return -1;
+    if (nc_xfer_all(fd, req, n) != 0) return -1;
+    return 0;
+}
+
+/* Прочитать заголовки ответа. Заполняет code/clen/chunked/location.
+ * Сразу за заголовками остаётся буферизованное тело. 0 = ok, -1 = error. */
+static int wget_read_headers(wbuf_t *b, int *code, long *clen,
+                             int *chunked, char *loc, int loccap) {
+    *code = 0; *clen = -1; *chunked = 0; loc[0] = '\0';
+    for (;;) {
+        /* ищем конец заголовков в текущем буфере */
+        int found = -1, term = 0;
+        for (int i = b->start; i + 3 < b->end; i++) {
+            if (b->buf[i] == '\r' && b->buf[i + 1] == '\n' &&
+                b->buf[i + 2] == '\r' && b->buf[i + 3] == '\n') {
+                found = i; term = 4; break;
+            }
+        }
+        if (found < 0) {
+            for (int i = b->start; i + 1 < b->end; i++) {
+                if (b->buf[i] == '\n' && b->buf[i + 1] == '\n') {
+                    found = i; term = 2; break;
+                }
+            }
+        }
+        if (found >= 0) {
+            int p = b->start;
+            int first = 1;
+            while (p < found) {
+                int q = p;
+                while (q < found && b->buf[q] != '\n') q++;
+                int len = q - p;
+                if (len > 0 && b->buf[q - 1] == '\r') len--;
+                if (len < 0) len = 0;
+                if (first) {
+                    /* "HTTP/1.x CODE ..." */
+                    int sp = p;
+                    while (sp < p + len && b->buf[sp] != ' ') sp++;
+                    if (sp < p + len) {
+                        const char *cp = (const char *)b->buf + sp + 1;
+                        *code = atoi(cp);
+                    }
+                    first = 0;
+                } else {
+                    /* копируем строку в NUL-terminated буфер и парсим её */
+                    char tmp[256];
+                    int tl = len < (int)sizeof(tmp) - 1 ? len
+                                                         : (int)sizeof(tmp) - 1;
+                    memcpy(tmp, b->buf + p, (size_t)tl);
+                    tmp[tl] = '\0';
+                    char *colonp = strchr(tmp, ':');
+                    if (colonp) {
+                        *colonp = '\0';
+                        char *valp = colonp + 1;
+                        while (*valp == ' ') valp++;
+                        if (strcasecmp(tmp, "content-length") == 0) {
+                            *clen = atol(valp);
+                        } else if (strcasecmp(tmp, "transfer-encoding") == 0) {
+                            if (strcasestr(valp, "chunked")) *chunked = 1;
+                        } else if (strcasecmp(tmp, "location") == 0) {
+                            strncpy(loc, valp, (size_t)loccap - 1);
+                            loc[loccap - 1] = '\0';
+                            int ll = (int)strlen(loc);
+                            while (ll > 0 && (loc[ll - 1] == '\r' ||
+                                              loc[ll - 1] == ' '))
+                                loc[--ll] = '\0';
+                        }
+                    }
+                }
+                p = q + 1;
+            }
+            b->start = found + term;
+            return 0;
+        }
+        int rc = wbuf_append(b);
+        if (rc < 0) return -1;
+        if (rc == 0) return -1;                  /* EOF до конца заголовков */
+    }
+}
+
+/* Пропустить CRLF после чанка. */
+static int wbuf_skip_crlf(wbuf_t *b) {
+    unsigned char c;
+    if (wbuf_get(b, &c) <= 0) return -1;
+    if (c == '\r') {
+        if (wbuf_get(b, &c) <= 0) return -1;
+    }
+    return 0;
+}
+
+static int hexval(int c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+static int wget_save_body(wbuf_t *b, int outfd, int chunked, long clen,
+                          unsigned long long *written) {
+    *written = 0;
+    if (chunked) {
+        for (;;) {
+            char line[32];
+            int ln = wbuf_line(b, line, sizeof(line));
+            if (ln < 0) return -1;
+            int sz = 0;
+            for (int i = 0; i < ln; i++) {
+                int v = hexval((unsigned char)line[i]);
+                if (v < 0) break;
+                if (sz > 0x0FFFFFFF) return -1;
+                sz = sz * 16 + v;
+            }
+            if (sz == 0) break;
+            unsigned char tmp[1024];
+            while (sz > 0) {
+                int take = sz > (int)sizeof(tmp) ? (int)sizeof(tmp) : sz;
+                if (wbuf_readn(b, tmp, take) != 0) return -1;
+                if (wget_write_all(outfd, tmp, take) != 0) return -1;
+                *written += (unsigned long long)take;
+                sz -= take;
+            }
+            if (wbuf_skip_crlf(b) != 0) return -1;
+        }
+        return 0;
+    }
+
+    if (clen == 0) return 0;                     /* тело пустое */
+    unsigned char tmp[1024];
+    for (;;) {
+        if (b->start == b->end) {
+            int rc = wbuf_fill(b);
+            if (rc < 0) return -1;
+            if (rc == 0) break;
+        }
+        int take = b->end - b->start;
+        if (clen >= 0 && take > clen) take = (int)clen;
+        memcpy(tmp, b->buf + b->start, (size_t)take);
+        b->start += take;
+        if (wget_write_all(outfd, tmp, take) != 0) return -1;
+        *written += (unsigned long long)take;
+        if (clen >= 0) {
+            clen -= take;
+            if (clen == 0) break;
+        }
+    }
+    return 0;
+}
+
+static int wget_open_conn(const char *host, int port) {
+    uint32_t ip;
+    if (parse_ipv4(host, &ip) != 0 && dns_resolve(host, &ip) != 0) return -1;
+    int fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (fd < 0) return -2;
+    struct sockaddr_in dst;
+    fill_sin(&dst, ip, (uint16_t)port);
+    if (connect(fd, (struct sockaddr *)&dst, sizeof(dst)) < 0) {
+        close(fd);
+        return -3;
+    }
+    return fd;
+}
+
+int cact_ub_wget(char **argv, int argc) {
+    const char *url = NULL;
+    const char *outfile = NULL;
+
+    for (int i = 1; i < argc; i++) {
+        if ((strcmp(argv[i], "-o") == 0 || strcmp(argv[i], "-O") == 0) &&
+            i + 1 < argc) {
+            outfile = argv[++i];
+        } else if (strcmp(argv[i], "-h") == 0 ||
+                   strcmp(argv[i], "--help") == 0) {
+            fprintf(stderr,
+                    "usage: wget [-o FILE] [http://]HOST[:PORT][/PATH]\n"
+                    "  micro HTTP/1.1 GET client (no TLS)\n"
+                    "  default output: basename of PATH (index.html for '/')\n");
+            return 0;
+        } else if (argv[i][0] == '-' && argv[i][1]) {
+            we("wget: unknown option ");
+            we(argv[i]);
+            we("\n");
+            return 1;
+        } else {
+            url = argv[i];
+        }
+    }
+    if (!url) {
+        we("usage: wget [-o FILE] [http://]HOST[:PORT][/PATH]\n");
+        return 1;
+    }
+
+    char host[160];
+    char path[768];
+    int  port = 80;
+    if (wget_parse_url(url, host, sizeof(host), &port, path, sizeof(path)) != 0) {
+        we("wget: bad URL\n");
+        return 1;
+    }
+
+    for (int attempt = 0; attempt < W_REDIR_MAX; attempt++) {
+        int fd = wget_open_conn(host, port);
+        if (fd < 0) {
+            we("wget: cannot connect to ");
+            we(host);
+            we("\n");
+            return 1;
+        }
+        if (wget_send_request(fd, host, port, path) != 0) {
+            we("wget: send failed\n");
+            close(fd);
+            return 1;
+        }
+
+        wbuf_t buf;
+        buf.fd = fd;
+        buf.start = buf.end = 0;
+
+        int code, chunked;
+        long clen;
+        char loc[1024];
+        if (wget_read_headers(&buf, &code, &clen, &chunked, loc, sizeof(loc)) != 0) {
+            we("wget: malformed response\n");
+            close(fd);
+            return 1;
+        }
+
+        if (code == 301 || code == 302 || code == 303 ||
+            code == 307 || code == 308) {
+            close(fd);
+            if (!loc[0]) {
+                we("wget: redirect without Location\n");
+                return 1;
+            }
+            if (strncmp(loc, "http://", 7) == 0) {
+                if (wget_parse_url(loc, host, sizeof(host), &port,
+                                   path, sizeof(path)) != 0) {
+                    we("wget: bad redirect Location\n");
+                    return 1;
+                }
+            } else if (loc[0] == '/') {
+                strncpy(path, loc, sizeof(path) - 1);
+                path[sizeof(path) - 1] = '\0';
+            } else {
+                we("wget: unsupported redirect (relative or https)\n");
+                return 1;
+            }
+            fprintf(stderr, "wget: %d redirect -> %s\n", code, loc);
+            continue;
+        }
+
+        if (code < 200 || code >= 300) {
+            fprintf(stderr, "wget: HTTP %d\n", code);
+            close(fd);
+            return 1;
+        }
+
+        /* открываем файл только при успешном ответе */
+        int outfd = STDOUT_FILENO;
+        char defname[128];
+        const char *name = outfile;
+        if (!name) {
+            wget_default_name(path, defname, sizeof(defname));
+            name = defname;
+        }
+        int opened = 0;
+        if (strcmp(name, "-") != 0) {
+            outfd = open(name, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            if (outfd < 0) {
+                we("wget: cannot create ");
+                we(name);
+                we("\n");
+                close(fd);
+                return 1;
+            }
+            opened = 1;
+        }
+
+        unsigned long long written = 0;
+        int rc = wget_save_body(&buf, outfd, chunked, clen, &written);
+        if (opened) close(outfd);
+        close(fd);
+
+        if (rc != 0) {
+            we("wget: body read failed\n");
+            return 1;
+        }
+        fprintf(stderr, "wget: HTTP %d, %llu bytes -> %s\n",
+                code, written, name);
+        return 0;
+    }
+
+    we("wget: too many redirects\n");
     return 1;
 }

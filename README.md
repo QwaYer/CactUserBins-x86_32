@@ -5,7 +5,7 @@
   <img src="https://img.shields.io/badge/language-C-orange.svg?style=for-the-badge" alt="Language: C">
   <img src="https://img.shields.io/badge/link-PIE%20%2B%20clibc.so-purple.svg?style=for-the-badge" alt="PIE + clibc.so">
   <img src="https://img.shields.io/badge/layout-one%20ELF%20per%20tool-blue.svg?style=for-the-badge" alt="One ELF per tool">
-  <img src="https://img.shields.io/badge/tools-36-green.svg?style=for-the-badge" alt="36 tools">
+  <img src="https://img.shields.io/badge/tools-45-green.svg?style=for-the-badge" alt="45 tools">
   <img src="https://img.shields.io/badge/install-LocalRepoCactOS-0369a1.svg?style=for-the-badge" alt="install → LocalRepoCactOS">
 </p>
 
@@ -20,7 +20,7 @@
 
 | | |
 |---|---|
-| **Utilities** | **36** standalone programs (see [`Makefile`](Makefile) `APPS`) |
+| **Utilities** | **45** standalone programs (see [`Makefile`](Makefile) `APPS`) |
 | **`/bin` vs `/sbin`** | **`LR_BIN`** / **`LR_SBIN`** passed to **`make install`** (staging dirs under **LocalRepo**) |
 | **Shared objects** | **`common/ex_*.c`** compiled once; each link pulls **`start.o`** + **one** `*/main.o` + all **`common/*.o`** with **`--gc-sections`** so unused entrypoints are dropped |
 | **Load address** | PIE **ET_DYN** at **`0x08000000`** ([`link.ld`](link.ld)) — same family as **cactsole** / **cgoct** |
@@ -67,17 +67,25 @@ CactUserBins-x86_32/
 ├── common/
 │   ├── ex_files.c        # ls, mkdir, rmdir, tch, rm, cat, wrt, stat, mv, ln, readlink
 │   ├── ex_misc.c         # true, false, whoami, id, chmod, chown, version
-│   ├── ex_net.c          # nconn, net, ping, dhcp, dns
+│   ├── ex_net.c          # nconn, net, ping, dhcp, dns, ip, nc, wget
+│   ├── ex_dd.c           # dd
+│   ├── ex_df.c           # df
+│   ├── ex_grep.c         # grep
 │   ├── ex_sys.c          # clear, date, uptime, kill, su, sleep, free, fetch, run, modload, modunload
 │   ├── ex_echo.c         # echo
 │   └── ex_nav.c          # pwd (cd stays a cactsole builtin)
-├── build/bin/            # generated ELFs (gitignored)
+├── build/                # generated ELFs (gitignored)
 ├── cat/ ls/ …/           # one directory per utility; each holds main.c → main.o
+├── fdisk/                # parted-analog: ptab.c (pure) + main.c
+├── mkfs.ext4/            # ext4 formatter: ext4_fmt.c (pure) + main.c
+├── mkfs.fat32/           # FAT32 formatter: fat32_fmt.c (pure) + main.c
+├── cact-rootfs/          # root skeleton + boot/ deploy
+├── tests/                # host test suite (make test)
 └── README.md
 ```
 
 **`APPS`** (authoritative list in the Makefile):  
-`pwd` `ls` `mkdir` `rmdir` `tch` `rm` `cat` `wrt` `stat` `mv` `ln` `readlink` `clear` `date` `uptime` `kill` `su` `sleep` `free` `fetch` `modload` `modunload` `run` `echo` `true` `false` `whoami` `id` `chmod` `chown` `version` `nconn` `net` `ping` `dhcp` `dns`
+`pwd` `ls` `mkdir` `rmdir` `tch` `rm` `cat` `wrt` `stat` `mv` `ln` `readlink` `clear` `date` `uptime` `kill` `su` `sleep` `free` `fetch` `modload` `modunload` `run` `echo` `true` `false` `whoami` `id` `chmod` `chown` `version` `nconn` `net` `ping` `dhcp` `dns` `nc` `wget` `dd` `df` `grep` + `fdisk` `mkfs.ext4` `mkfs.fat32` `cact-rootfs`
 
 ---
 
@@ -86,8 +94,47 @@ CactUserBins-x86_32/
 | Topic | Detail |
 |-------|--------|
 | **Why one ELF per tool** | Smaller individual binaries than a busybox-style monolith; **`--gc-sections`** keeps only the **`main`** and **`cact_ub_*`** paths each `main.c` calls |
-| **FHS-style paths** | **`sbinfs`** exposes **`/sbin/*`** for privileged-style tools (`kill`, `su`, PCI **`modload`** / **`modunload`**, **`ping`**, **`dhcp`**, **`dns`**) |
+| **FHS-style paths** | **`sbinfs`** exposes **`/sbin/*`** for privileged-style tools (`kill`, `su`, PCI **`modload`** / **`modunload`**, **`ping`**, **`dhcp`**, **`dns`**, disk/fs tools) |
 | **Syscall drift** | If **`syscall.h`** / libc numbers change in CactLib, rebuild **libc**, then **re-link** cactsole, **CactUserBins**, cgoct, and any other dynamic ELFs |
+
+---
+
+## 💽 Disk / filesystem utilities (Фаза 2)
+
+Installer-building tools — the CactOS analogues of `parted`, `mkfs.ext4`,
+`mkfs.fat` and a rootfs deploy step.  All are installed into **`/sbin`**.
+
+| Tool | Purpose |
+|------|---------|
+| **`fdisk`** | MBR/GPT partition-table editor. Reads/writes `/dev/<disk>` nodes (whole-disk CactOS block devices) or raw images; after `w` asks the kernel to re-scan the disk (`/dev/sys` ioctl) so `/dev/sdaN` appears without a reboot. Verbs: `p o g n d t b l w`; pure logic in `fdisk/ptab.c`. |
+| **`mkfs.ext4`** | Formats a device/partition/image as ext4 compatible with the CactOS `ext4.cctk` module: 4096-byte blocks, no journal / 64-bit / metadata_csum / flex_bg, inode size ≥ 256. `-b`, `-I`, `-L`. |
+| **`mkfs.fat32`** | Formats a device as a standard FAT32 volume (`-n label`); mirrors the FAT and writes FSInfo + backup boot sector. |
+| **`cact-rootfs`** | Deploys the root skeleton onto a mounted target: `boot/` (kernel + `cctkfs.img` + generated `grub.cfg`), `/etc`, `/var/{log,run,tmp}`, and optionally copies `/bin /sbin /lib` from the running tree (`-b`). |
+
+Format logic lives in portable C (`fdisk/ptab.c`, `mkfs.ext4/ext4_fmt.c`,
+`mkfs.fat32/fat32_fmt.c`) so it can be validated on the host:
+
+```sh
+make test      # builds build/host/* + runs tests/run_tests.sh
+```
+
+The host suite checks the tables with `fdisk -l`, ext4 with `e2fsck -fn`
+(clean across 64M–400M volumes), FAT32 with `fsck.fat`/mtools, and the
+rootfs skeleton by deploying a tree.
+
+---
+
+## 🛰️ Network / block / text utilities (Фаза 3)
+
+| Tool | Purpose |
+|------|---------|
+| **`nc`** | Minimal netcat: TCP client (`nc HOST PORT`) and one-shot listener (`nc -l [-p] PORT`). After connect/accept it forks and relays stdin↔socket, so raw data and files can be pushed/pulled over the network. |
+| **`wget`** | Micro HTTP/1.1 GET client: `wget [-o FILE] [http://]HOST[:PORT][/PATH]`. Handles `Content-Length`, chunked bodies, close-delimited responses and simple `Location` redirects; the body lands in a file (default: basename of the path). Enough for **cactpkg** to fetch manifests from a plain-HTTP mirror. |
+| **`dd`** | Block copier (`if=`/`of=`, `bs=`, `count=`, `skip=`, `seek=`, `conv=notrunc`, `status=none`). `dd if=/dev/zero of=/dev/sda1 bs=1M count=64` exercises the AHCI driver or fills a disk; works against the vfsdev byte-range block nodes. |
+| **`df`** | Free-space reporter for mounted ext4. Mount list is read from `/proc/mounts` (fallback: `/etc/mounts`, `/etc/mnts`); total/free come from the on-disk ext4 superblock of the partition node (same path `mkfs.ext4` uses). `df /dev/sda1` queries one device directly. |
+| **`grep`** | Line-oriented text search: `grep [-i] [-n] [-v] [-c] [-l] [-r] PATTERN [FILE...]` (plain substring, no regexes), files or stdin, recursive mode via `getdents`. Exit 0 = match, 1 = none, 2 = error. |
+
+`nc`/`wget`/`grep` install into `/bin`, `dd`/`df` into `/sbin` next to the other disk tools. Reboot/poweroff are postponed until the ACPI/powerd shutdown path is sorted out.
 
 ---
 
