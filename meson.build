@@ -70,7 +70,7 @@ c_args = [
 # The Makefile's APPS list.
 apps = [
   'pwd', 'ls', 'mkdir', 'rmdir', 'tch', 'rm', 'cat', 'wrt', 'stat', 'mv', 'ln',
-  'readlink', 'clear', 'date', 'uptime', 'kill', 'su', 'sleep', 'free', 'fetch',
+  'readlink', 'ldd', 'clear', 'date', 'uptime', 'kill', 'su', 'sleep', 'free', 'sysinfo',
   'modload', 'modunload', 'run', 'echo', 'true', 'false', 'whoami', 'id',
   'chmod', 'chown', 'version', 'nconn', 'net', 'ping', 'dhcp', 'dns', 'ip',
   'uxtest', 'nc', 'wget', 'dd', 'df', 'grep', 'fdisk', 'mkfs.ext4',
@@ -97,6 +97,7 @@ common_lib = static_library('common',
     'common/ex_echo.c',
     'common/ex_files.c',
     'common/ex_grep.c',
+    'common/ex_ldd.c',
     'common/ex_misc.c',
     'common/ex_nav.c',
     'common/ex_net.c',

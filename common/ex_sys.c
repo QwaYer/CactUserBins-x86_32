@@ -1,7 +1,7 @@
 /*
  * builtins/sys.c — системные команды.
  *
- *   clear / date / uptime / kill / su / sleep / free / fetch / run
+ *   clear / date / uptime / kill / su / sleep / free / sysinfo / run
  *   modload / modunload  — PCI .cctk kmod (root); modunload [pci-index|name]
  */
 
@@ -162,7 +162,7 @@ int cact_ub_free(char **argv, int argc) {
     return 0;
 }
 
-int cact_ub_fetch(char **argv, int argc) {
+int cact_ub_sysinfo(char **argv, int argc) {
     (void)argv; (void)argc;
 
     static const char *logo[] = {

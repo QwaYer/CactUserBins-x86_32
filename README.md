@@ -71,7 +71,8 @@ CactUserBins-x86_32/
 │   ├── ex_dd.c           # dd
 │   ├── ex_df.c           # df
 │   ├── ex_grep.c         # grep
-│   ├── ex_sys.c          # clear, date, uptime, kill, su, sleep, free, fetch, run, modload, modunload
+│   ├── ex_ldd.c          # ldd (ELF32 DT_NEEDED reader, GNU-compatible flags)
+│   ├── ex_sys.c          # clear, date, uptime, kill, su, sleep, free, sysinfo, run, modload, modunload
 │   ├── ex_echo.c         # echo
 │   └── ex_nav.c          # pwd (cd stays a cactsole builtin)
 ├── build/                # generated ELFs (gitignored)
@@ -85,7 +86,7 @@ CactUserBins-x86_32/
 ```
 
 **`apps`** (authoritative list in [`meson.build`](meson.build)):  
-`pwd` `ls` `mkdir` `rmdir` `tch` `rm` `cat` `wrt` `stat` `mv` `ln` `readlink` `clear` `date` `uptime` `kill` `su` `sleep` `free` `fetch` `modload` `modunload` `run` `echo` `true` `false` `whoami` `id` `chmod` `chown` `version` `nconn` `net` `ping` `dhcp` `dns` `nc` `wget` `dd` `df` `grep` + `fdisk` `mkfs.ext4` `mkfs.fat32` `cact-rootfs`
+`pwd` `ls` `mkdir` `rmdir` `tch` `rm` `cat` `wrt` `stat` `mv` `ln` `readlink` `ldd` `clear` `date` `uptime` `kill` `su` `sleep` `free` `sysinfo` `modload` `modunload` `run` `echo` `true` `false` `whoami` `id` `chmod` `chown` `version` `nconn` `net` `ping` `dhcp` `dns` `nc` `wget` `dd` `df` `grep` + `fdisk` `mkfs.ext4` `mkfs.fat32` `cact-rootfs`
 
 ---
 
