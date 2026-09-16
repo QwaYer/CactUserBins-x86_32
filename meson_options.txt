@@ -1,0 +1,11 @@
+option('cactlib', type: 'string', value: '../CactLibc-x86_32',
+  description: 'CactLibc project root, relative to this repo or absolute')
+
+option('cactsoleinc', type: 'string', value: '../Cactsole-x86_32/include',
+  description: 'Cactsole include/ directory (shell headers), relative or absolute')
+
+option('lr_bin', type: 'string', value: '../LocalRepoCactOS-x86_32/lib/bin',
+  description: 'staging /bin directory used by the stage target, relative or absolute')
+
+option('lr_sbin', type: 'string', value: '../LocalRepoCactOS-x86_32/lib/sbin',
+  description: 'staging /sbin directory used by the stage target, relative or absolute')

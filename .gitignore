@@ -1,3 +1,4 @@
 *.o
 build/bin/
 /build/bin/version
+build-meson/

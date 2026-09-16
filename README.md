@@ -20,8 +20,8 @@
 
 | | |
 |---|---|
-| **Utilities** | **45** standalone programs (see [`Makefile`](Makefile) `APPS`) |
-| **`/bin` vs `/sbin`** | **`LR_BIN`** / **`LR_SBIN`** passed to **`make install`** (staging dirs under **LocalRepo**) |
+| **Utilities** | **45** standalone programs (see [`meson.build`](meson.build) `apps`) |
+| **`/bin` vs `/sbin`** | **`lr_bin`** / **`lr_sbin`** options used by the **`stage`** target (staging dirs under **LocalRepo**) |
 | **Shared objects** | **`common/ex_*.c`** compiled once; each link pulls **`start.o`** + **one** `*/main.o` + all **`common/*.o`** with **`--gc-sections`** so unused entrypoints are dropped |
 | **Load address** | PIE **ET_DYN** at **`0x08000000`** ([`link.ld`](link.ld)) — same family as **cactsole** / **cgoct** |
 | **Headers** | **`CACTSOLEINC`** — path to **Cactsole** `include/` (set by **CactOS** or manually) |
@@ -62,7 +62,7 @@ Override any path if needed: `make CACTLIB=/custom/path install`.
 
 ```
 CactUserBins-x86_32/
-├── Makefile              # APPS list, BIN_APPS / SBIN_APPS split, install paths
+├── meson.build           # apps list, bin/sbin split, stage target
 ├── link.ld               # PIE @ 0x08000000
 ├── common/
 │   ├── ex_files.c        # ls, mkdir, rmdir, tch, rm, cat, wrt, stat, mv, ln, readlink
@@ -80,11 +80,11 @@ CactUserBins-x86_32/
 ├── mkfs.ext4/            # ext4 formatter: ext4_fmt.c (pure) + main.c
 ├── mkfs.fat32/           # FAT32 formatter: fat32_fmt.c (pure) + main.c
 ├── cact-rootfs/          # root skeleton + boot/ deploy
-├── tests/                # host test suite (make test)
+├── tests/                # (empty in this checkout — the old host test target is gone)
 └── README.md
 ```
 
-**`APPS`** (authoritative list in the Makefile):  
+**`apps`** (authoritative list in [`meson.build`](meson.build)):  
 `pwd` `ls` `mkdir` `rmdir` `tch` `rm` `cat` `wrt` `stat` `mv` `ln` `readlink` `clear` `date` `uptime` `kill` `su` `sleep` `free` `fetch` `modload` `modunload` `run` `echo` `true` `false` `whoami` `id` `chmod` `chown` `version` `nconn` `net` `ping` `dhcp` `dns` `nc` `wget` `dd` `df` `grep` + `fdisk` `mkfs.ext4` `mkfs.fat32` `cact-rootfs`
 
 ---
