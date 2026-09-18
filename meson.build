@@ -39,6 +39,8 @@ _lr_bin = get_option('lr_bin')
 lr_bin = _lr_bin.startswith('/') ? _lr_bin : src_root / _lr_bin
 _lr_sbin = get_option('lr_sbin')
 lr_sbin = _lr_sbin.startswith('/') ? _lr_sbin : src_root / _lr_sbin
+_drmuapi = get_option('drmuapi')
+drmuapi = _drmuapi.startswith('/') ? _drmuapi : src_root / _drmuapi
 
 start_o = cactlib / 'build-meson' / 'start.o'
 clibc_so = cactlib / 'build-meson' / 'clibc.so'
@@ -50,6 +52,9 @@ endif
 if not fs.is_dir(cactsoleinc)
   error('Cactsole headers not found at ' + cactsoleinc +
         '  —  build Cactsole first (its include/ ships shell.h)')
+endif
+if not fs.is_dir(drmuapi)
+  error('DRM uapi headers not found at ' + drmuapi)
 endif
 
 # Every object in this repo is position independent: the tools are PIEs.
@@ -74,7 +79,7 @@ apps = [
   'modload', 'modunload', 'run', 'echo', 'true', 'false', 'whoami', 'id',
   'chmod', 'chown', 'version', 'nconn', 'net', 'ping', 'dhcp', 'dns', 'ip',
   'uxtest', 'nc', 'wget', 'dd', 'df', 'grep', 'fdisk', 'mkfs.ext4',
-  'mkfs.fat32', 'cact-rootfs',
+  'mkfs.fat32', 'cact-rootfs', 'drmtest',
 ]
 
 # The Makefile's SBIN_APPS list.
@@ -114,7 +119,14 @@ foreach app : apps
     use_common = false
   endif
 
-  app_lib = static_library('app-' + app.underscorify(), sources, c_args: c_args)
+  # drmtest speaks the kernel's DRM ABI directly, so it compiles against the
+  # same uapi headers the core does.
+  app_c_args = c_args
+  if app == 'drmtest'
+    app_c_args = c_args + ['-I' + drmuapi]
+  endif
+
+  app_lib = static_library('app-' + app.underscorify(), sources, c_args: app_c_args)
 
   link_cmd = [ld, '-m', 'elf_i386', '-pie', '--dynamic-linker=/lib/ld.so',
               '--hash-style=both', '-nostdlib', '--gc-sections',

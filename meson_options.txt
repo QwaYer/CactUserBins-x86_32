@@ -9,3 +9,6 @@ option('lr_bin', type: 'string', value: '../LocalRepoCactOS-x86_32/lib/bin',
 
 option('lr_sbin', type: 'string', value: '../LocalRepoCactOS-x86_32/lib/sbin',
   description: 'staging /sbin directory used by the stage target, relative or absolute')
+
+option('drmuapi', type: 'string', value: '../CactKernel-x86_32/Cact/drivers/gpu/drm/uapi',
+  description: 'DRM uapi include directory, so drmtest uses the kernel ABI headers verbatim')
