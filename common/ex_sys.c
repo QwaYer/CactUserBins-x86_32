@@ -14,6 +14,7 @@
 #include <time.h>
 #include <fcntl.h>
 #include <dirent.h>
+#include <errno.h>
 
 int cact_ub_clear(char **argv, int argc) {
     (void)argv; (void)argc;
@@ -375,24 +376,30 @@ int cact_ub_modload(char **argv, int argc) {
         write(STDOUT_FILENO, "modload: ok\n", 12);
         return 0;
     }
-    if (rc == -1)
-        write(STDERR_FILENO, "modload: permission denied (need root)\n", 41);
-    else if (rc == -2)
-        write(STDERR_FILENO, "modload: invalid path or PCI id\n", 32);
-    else if (rc == -3)
-        write(STDERR_FILENO, "modload: module slot busy (modunload first)\n", 44);
-    else if (rc == -4) {
-        static const char e4[] =
-            "modload: module did not bind (VID/DID mismatch or load error — see kernel log)\n";
-        write(STDERR_FILENO, e4, sizeof(e4) - 1);
-    }
-    else {
-        write(STDERR_FILENO, "modload: failed (", 17);
-        char b[16];
-        itoa(rc, b);
-        write(STDERR_FILENO, b, strlen(b));
+    // module_load() folds the kernel's error into errno (the /dev/sys ioctl
+    // returns -errno); decode that, never the collapsed -1.
+    const char *m;
+    char        num[16];
+    switch (errno) {
+    case EPERM:  m = "modload: permission denied (need root)\n";            break;
+    case ENOENT: m = "modload: no such module (not in cctkfs/VFS)\n";       break;
+    case EACCES: m = "modload: module signature rejected (bad HMAC)\n";     break;
+    case EBUSY:  m = "modload: module slot busy (modunload first)\n";       break;
+    case EEXIST: m = "modload: already loaded (modunload first)\n";          break;
+    case ENODEV: m = "modload: module did not bind: no matching PCI device "
+                     "(see the kernel log)\n";                              break;
+    case EINVAL: m = "modload: invalid module image or PCI id\n";           break;
+    case ENOSPC: m = "modload: no free module slot\n";                      break;
+    case ENOMEM: m = "modload: out of memory\n";                            break;
+    default:
+        m = "modload: failed (errno ";
+        write(STDERR_FILENO, m, strlen(m));
+        itoa(errno, num);
+        write(STDERR_FILENO, num, strlen(num));
         write(STDERR_FILENO, ")\n", 2);
+        return 1;
     }
+    write(STDERR_FILENO, m, strlen(m));
     return 1;
 }
 
@@ -409,21 +416,25 @@ int cact_ub_modunload(char **argv, int argc) {
         write(STDOUT_FILENO, "modunload: ok\n", 14);
         return 0;
     }
-    if (rc == -1)
-        write(STDERR_FILENO, "modunload: permission denied (need root)\n", 41);
-    else if (rc == -2)
-        write(STDERR_FILENO, "modunload: invalid argument\n", 28);
-    else if (rc == -5)
-        write(STDERR_FILENO, "modunload: no driver with that name\n", 36);
-    else if (rc == -6)
-        write(STDERR_FILENO, "modunload: not a relocatable module (built-in)\n", 47);
-    else if (rc == -7)
-        write(STDERR_FILENO, "modunload: no PCI function at that index (see /dev/modinfo)\n", 61);
-    else if (rc == -8)
-        write(STDERR_FILENO, "modunload: no .cctk driver for that PCI function\n", 49);
-    else {
-        write(STDERR_FILENO, "modunload: failed\n", 18);
+    // Same as modload: the reason is in errno, not in the collapsed return.
+    const char *m;
+    char        num[16];
+    switch (errno) {
+    case EPERM:  m = "modunload: permission denied (need root)\n";          break;
+    case EINVAL: m = "modunload: invalid argument\n";                       break;
+    case ENOENT: m = "modunload: no driver with that name\n";               break;
+    case ENODEV: m = "modunload: no .cctk driver for that PCI function\n";  break;
+    case EOPNOTSUPP: m = "modunload: not a relocatable module (built-in)\n"; break;
+    case EBUSY:  m = "modunload: module busy (still mounted)\n";            break;
+    default:
+        m = "modunload: failed (errno ";
+        write(STDERR_FILENO, m, strlen(m));
+        itoa(errno, num);
+        write(STDERR_FILENO, num, strlen(num));
+        write(STDERR_FILENO, ")\n", 2);
+        return 1;
     }
+    write(STDERR_FILENO, m, strlen(m));
     return 1;
 }
 
