@@ -3,6 +3,7 @@
  *
  *   clear / date / uptime / kill / su / sleep / free / sysinfo / run
  *   modload / modunload  — PCI .cctk kmod (root); modunload [pci-index|name]
+ *   poweroff / reboot / halt / suspend — через powerd (fallback: reboot(2))
  */
 
 #include "version.h"
@@ -15,14 +16,32 @@
 #include <fcntl.h>
 #include <dirent.h>
 #include <errno.h>
+#include <socket.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <nodeio.h>
+#include <drm.h>
+#include <drm_mode.h>
+
+static const char clear_usage[] = "usage: clear\n";
 
 int cact_ub_clear(char **argv, int argc) {
+    if (argc >= 2 && strcmp(argv[1], "--help") == 0) {
+        write(STDOUT_FILENO, clear_usage, sizeof(clear_usage) - 1);
+        return 0;
+    }
     (void)argv; (void)argc;
     write(STDOUT_FILENO, "\033[2J\033[H", 7);
     return 0;
 }
 
+static const char date_usage[] = "usage: date\n";
+
 int cact_ub_date(char **argv, int argc) {
+    if (argc >= 2 && strcmp(argv[1], "--help") == 0) {
+        write(STDOUT_FILENO, date_usage, sizeof(date_usage) - 1);
+        return 0;
+    }
     (void)argv; (void)argc;
     struct timeval tv;
     gettimeofday(&tv, 0);
@@ -64,7 +83,13 @@ int cact_ub_date(char **argv, int argc) {
     return 0;
 }
 
+static const char uptime_usage[] = "usage: uptime\n";
+
 int cact_ub_uptime(char **argv, int argc) {
+    if (argc >= 2 && strcmp(argv[1], "--help") == 0) {
+        write(STDOUT_FILENO, uptime_usage, sizeof(uptime_usage) - 1);
+        return 0;
+    }
     (void)argv; (void)argc;
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -100,10 +125,17 @@ static int map_sig(int n) {
     }
 }
 
+static const char kill_usage[] =
+    "usage: kill [-SIG] PID...\n"
+    "  -1 SIGKILL  -2 SIGTERM  -9 SIGKILL(posix)  -15 SIGTERM(posix)\n";
+
 int cact_ub_kill(char **argv, int argc) {
+    if (argc >= 2 && strcmp(argv[1], "--help") == 0) {
+        write(STDOUT_FILENO, kill_usage, sizeof(kill_usage) - 1);
+        return 0;
+    }
     if (argc < 2) {
-        write(STDERR_FILENO, "usage: kill [-SIG] PID...\n", 26);
-        write(STDERR_FILENO, "  -1 SIGKILL  -2 SIGTERM  -9 SIGKILL(posix)  -15 SIGTERM(posix)\n", 65);
+        write(STDERR_FILENO, kill_usage, sizeof(kill_usage) - 1);
         return 1;
     }
     int sig   = (int)SIGTERM;
@@ -125,7 +157,13 @@ int cact_ub_kill(char **argv, int argc) {
     return ret;
 }
 
+static const char su_usage[] = "usage: su [UID [GID]]\n";
+
 int cact_ub_su(char **argv, int argc) {
+    if (argc >= 2 && strcmp(argv[1], "--help") == 0) {
+        write(STDOUT_FILENO, su_usage, sizeof(su_usage) - 1);
+        return 0;
+    }
     uid_t uid = 0;
     gid_t gid = 0;
     if (argc >= 2) {
@@ -146,13 +184,25 @@ int cact_ub_su(char **argv, int argc) {
     return 0;
 }
 
+static const char sleep_usage[] = "usage: sleep SECONDS\n";
+
 int cact_ub_sleep(char **argv, int argc) {
-    if (argc < 2) { write(STDERR_FILENO, "usage: sleep SECONDS\n", 21); return 1; }
+    if (argc >= 2 && strcmp(argv[1], "--help") == 0) {
+        write(STDOUT_FILENO, sleep_usage, sizeof(sleep_usage) - 1);
+        return 0;
+    }
+    if (argc < 2) { write(STDERR_FILENO, sleep_usage, sizeof(sleep_usage) - 1); return 1; }
     sleep((unsigned int)atoi(argv[1]));
     return 0;
 }
 
+static const char free_usage[] = "usage: free\n";
+
 int cact_ub_free(char **argv, int argc) {
+    if (argc >= 2 && strcmp(argv[1], "--help") == 0) {
+        write(STDOUT_FILENO, free_usage, sizeof(free_usage) - 1);
+        return 0;
+    }
     (void)argv; (void)argc;
     void *brk = sbrk(0);
     char buf[32];
@@ -163,7 +213,84 @@ int cact_ub_free(char **argv, int argc) {
     return 0;
 }
 
+/* Значение строки текстового /proc-файла, начинающейся с key: текст после
+ * ':' и пробелов копируется в out.  Возвращает 0, если поле найдено. */
+static int proc_field(const char *buf, const char *key, char *out, int cap) {
+    int klen = (int)strlen(key);
+    const char *p = buf;
+    out[0] = '\0';
+    while (*p) {
+        if (strncmp(p, key, (size_t)klen) == 0) {
+            const char *v = p + klen;
+            while (*v == ' ' || *v == '\t') v++;
+            if (*v == ':') { v++; while (*v == ' ' || *v == '\t') v++; }
+            int o = 0;
+            while (*v && *v != '\n' && *v != '\r' && o < cap - 1)
+                out[o++] = *v++;
+            out[o] = '\0';
+            return o > 0 ? 0 : -1;
+        }
+        while (*p && *p != '\n') p++;
+        if (*p) p++;
+    }
+    return -1;
+}
+
+/* Сколько строк текстового /proc-файла начинаются с key. */
+static int proc_count(const char *buf, const char *key) {
+    int klen = (int)strlen(key), cnt = 0;
+    const char *p = buf;
+    while (*p) {
+        if (strncmp(p, key, (size_t)klen) == 0) cnt++;
+        while (*p && *p != '\n') p++;
+        if (*p) p++;
+    }
+    return cnt;
+}
+
+/* Текущий режим дисплея: GETRESOURCES + GETCRTC — те же legacy-DRM ioctl,
+ * которыми пользуется drmtest, только на чтение.  Любая неудача означает
+ * лишь отсутствие строки Display: без GPU sysinfo обязан работать. */
+static int display_mode(unsigned *w, unsigned *h, unsigned *hz) {
+    uint32_t crtcs[8];
+    struct drm_mode_card_res res;
+    struct drm_mode_crtc gc;
+    int fd = open("/dev/dri/card0", O_RDWR);
+    if (fd < 0) return -1;
+
+    memset(&res, 0, sizeof(res));
+    memset(crtcs, 0, sizeof(crtcs));
+    res.crtc_id_ptr = (uint64_t)(uintptr_t)crtcs;
+    res.count_crtcs = sizeof(crtcs) / sizeof(crtcs[0]);
+
+    if (ioctl(fd, DRM_IOCTL_MODE_GETRESOURCES, &res) != 0) {
+        close(fd);
+        return -1;
+    }
+
+    for (uint32_t i = 0; i < res.count_crtcs && i < sizeof(crtcs) / sizeof(crtcs[0]); i++) {
+        memset(&gc, 0, sizeof(gc));
+        gc.crtc_id = crtcs[i];
+        if (ioctl(fd, DRM_IOCTL_MODE_GETCRTC, &gc) != 0) continue;
+        if (!gc.mode_valid || gc.mode.hdisplay == 0 || gc.mode.vdisplay == 0) continue;
+        *w  = gc.mode.hdisplay;
+        *h  = gc.mode.vdisplay;
+        *hz = gc.mode.vrefresh;
+        close(fd);
+        return 0;
+    }
+
+    close(fd);
+    return -1;
+}
+
+static const char sysinfo_usage[] = "usage: sysinfo\n";
+
 int cact_ub_sysinfo(char **argv, int argc) {
+    if (argc >= 2 && strcmp(argv[1], "--help") == 0) {
+        write(STDOUT_FILENO, sysinfo_usage, sizeof(sysinfo_usage) - 1);
+        return 0;
+    }
     (void)argv; (void)argc;
 
     static const char *logo[] = {
@@ -192,93 +319,134 @@ int cact_ub_sysinfo(char **argv, int argc) {
         NULL
     };
 
-    char lines[7][80];
+    char lines[16][128];
     int n = 0;
 
+    struct utsname un;
+    int have_uname = (uname(&un) == 0);
+
+    if (have_uname)
+        snprintf(lines[n++], sizeof(lines[0]), "\033[33mOS\033[0m: %s (%s)",
+                 un.sysname, un.machine);
+    else
+        snprintf(lines[n++], sizeof(lines[0]), "\033[33mOS\033[0m: Cact OS");
+    snprintf(lines[n++], sizeof(lines[0]), "\033[33mKernel\033[0m: %s",
+             have_uname ? un.release : "?");
+
     {
-        const char *s = "\033[33mOS\033[0m: Cact OS";
-        int sl = strlen(s);
-        memcpy(lines[n], s, sl); lines[n][sl] = '\0'; n++;
-    }
-    {
-        const char *s = "\033[33mKernel\033[0m: Cact x86_32";
-        int sl = strlen(s);
-        memcpy(lines[n], s, sl); lines[n][sl] = '\0'; n++;
-    }
-    {
-        const char *s = "\033[33mUptime\033[0m: ";
-        int sl = strlen(s);
-        memcpy(lines[n], s, sl);
-        int pos = sl;
         struct timespec ts;
         clock_gettime(CLOCK_MONOTONIC, &ts);
         long total = ts.tv_sec;
         long d = total / 86400; total %= 86400;
-        int h = (int)(total / 3600); total %= 3600;
-        int m = (int)(total / 60);
-        if (d > 0) {
-            char num[16]; itoa((int)d, num);
-            int nd = strlen(num);
-            memcpy(lines[n] + pos, num, nd); pos += nd;
-            lines[n][pos++] = 'd';
-            lines[n][pos++] = ' ';
-        }
-        {
-            char num[16]; itoa(h, num);
-            int nh = strlen(num);
-            memcpy(lines[n] + pos, num, nh); pos += nh;
-            lines[n][pos++] = ':';
-            if (m < 10) lines[n][pos++] = '0';
-            itoa(m, num);
-            int nm = strlen(num);
-            memcpy(lines[n] + pos, num, nm); pos += nm;
-        }
-        lines[n][pos] = '\0'; n++;
+        int  h = (int)(total / 3600); total %= 3600;
+        int  m = (int)(total / 60);
+        if (d > 0)
+            snprintf(lines[n++], sizeof(lines[0]),
+                     "\033[33mUptime\033[0m: %ldd %d:%02d", d, h, m);
+        else
+            snprintf(lines[n++], sizeof(lines[0]),
+                     "\033[33mUptime\033[0m: %d:%02d", h, m);
     }
+
+    /* Модель и частоту ядра ядро отдаёт в /proc/cpuinfo. */
     {
+        static char cpubuf[4096];
+        int got = nio_read_file("/proc/cpuinfo", cpubuf, sizeof(cpubuf) - 1);
+        if (got > 0) {
+            char model[80];
+            cpubuf[got] = '\0';
+            if (proc_field(cpubuf, "model name", model, sizeof(model)) == 0)
+                snprintf(lines[n++], sizeof(lines[0]), "\033[33mCPU\033[0m: %s", model);
+
+            int cores = proc_count(cpubuf, "processor");
+            char mhz[24];
+            if (cores > 0 &&
+                proc_field(cpubuf, "cpu MHz", mhz, sizeof(mhz)) == 0 &&
+                strcmp(mhz, "0") != 0)
+                snprintf(lines[n++], sizeof(lines[0]),
+                         "\033[33mCores\033[0m: %d @ %s MHz", cores, mhz);
+            else if (cores > 0)
+                snprintf(lines[n++], sizeof(lines[0]), "\033[33mCores\033[0m: %d", cores);
+        }
+    }
+
+    /* Память и swap — /proc/meminfo (значения в kB). */
+    {
+        static char membuf[512];
+        int got = nio_read_file("/proc/meminfo", membuf, sizeof(membuf) - 1);
+        if (got > 0) {
+            char tot[24], used[24], swap[24];
+            membuf[got] = '\0';
+            if (proc_field(membuf, "MemTotal", tot, sizeof(tot)) == 0 &&
+                proc_field(membuf, "MemUsed", used, sizeof(used)) == 0) {
+                int t = atoi(tot), u = atoi(used);
+                snprintf(lines[n++], sizeof(lines[0]),
+                         "\033[33mMemory\033[0m: %d MiB / %d MiB (%d%%)",
+                         u / 1024, t / 1024, t > 0 ? (u * 100) / t : 0);
+            }
+            if (proc_field(membuf, "SwapTotal", swap, sizeof(swap)) == 0) {
+                int s = atoi(swap);
+                if (s > 0)
+                    snprintf(lines[n++], sizeof(lines[0]),
+                             "\033[33mSwap\033[0m: %d MiB", s / 1024);
+                else
+                    snprintf(lines[n++], sizeof(lines[0]), "\033[33mSwap\033[0m: none");
+            }
+        }
+    }
+
+    /* Дисплей — текущий режим KMS, если в системе есть DRM. */
+    {
+        unsigned dw, dh, dhz;
+        if (display_mode(&dw, &dh, &dhz) == 0) {
+            if (dhz > 0)
+                snprintf(lines[n++], sizeof(lines[0]),
+                         "\033[33mDisplay\033[0m: %ux%u @ %u Hz", dw, dh, dhz);
+            else
+                snprintf(lines[n++], sizeof(lines[0]),
+                         "\033[33mDisplay\033[0m: %ux%u", dw, dh);
+        }
+    }
+
+    /* Сеть — тот же ioctl, которым пользуется `ip addr`.  nio_dev_cmd сам
+     * добавляет "/dev/", поэтому имя узла здесь без префикса. */
+    {
+        cact_netcfg_get_t g;
+        memset(&g, 0, sizeof(g));
+        if (nio_dev_cmd("net", CACT_NETCTL_NETCFG_GET, &g) >= 0 && g.ip_host)
+            snprintf(lines[n++], sizeof(lines[0]), "\033[33mNet\033[0m: eth0 %u.%u.%u.%u",
+                     (unsigned)((g.ip_host >> 24) & 0xFFu),
+                     (unsigned)((g.ip_host >> 16) & 0xFFu),
+                     (unsigned)((g.ip_host >> 8) & 0xFFu),
+                     (unsigned)(g.ip_host & 0xFFu));
+        else
+            snprintf(lines[n++], sizeof(lines[0]),
+                     "\033[33mNet\033[0m: (no IPv4 address)");
+    }
+
+    /* Программы: считаем записи в каталогах, куда ставится CactUserBins. */
+    {
+        static const char *pkgdirs[] = {"/bin", "/sbin", NULL};
         int pkg = 0;
-        int fd = open("/bin", O_RDONLY, 0);
-        if (fd >= 0) {
-            struct dirent buf[32];
+        for (int d = 0; pkgdirs[d]; d++) {
+            int fd = open(pkgdirs[d], O_RDONLY, 0);
+            if (fd < 0) continue;
+            struct dirent dbuf[32];
             int r;
-            while ((r = getdents(fd, buf, sizeof(buf))) > 0) {
+            while ((r = getdents(fd, dbuf, sizeof(dbuf))) > 0) {
                 int cnt = r / (int)sizeof(struct dirent);
                 for (int i = 0; i < cnt; i++)
-                    if (buf[i].d_name[0] != '.') pkg++;
+                    if (dbuf[i].d_name[0] != '.') pkg++;
             }
             close(fd);
         }
-        fd = open("/sbin", O_RDONLY, 0);
-        if (fd >= 0) {
-            struct dirent buf[32];
-            int r;
-            while ((r = getdents(fd, buf, sizeof(buf))) > 0) {
-                int cnt = r / (int)sizeof(struct dirent);
-                for (int i = 0; i < cnt; i++)
-                    if (buf[i].d_name[0] != '.') pkg++;
-            }
-            close(fd);
-        }
-        char num[16]; itoa(pkg, num);
-        const char *pfx = "\033[33mPackages\033[0m: ";
-        int pl = strlen(pfx);
-        memcpy(lines[n], pfx, pl);
-        memcpy(lines[n] + pl, num, strlen(num) + 1); n++;
+        snprintf(lines[n++], sizeof(lines[0]), "\033[33mPackages\033[0m: %d", pkg);
     }
-    {
-        const char *s = "\033[33mShell\033[0m: cactsole ";
-        int sl = strlen(s);
-        memcpy(lines[n], s, sl);
-        memcpy(lines[n] + sl, CACTSOLE_VERSION, strlen(CACTSOLE_VERSION) + 1); n++;
-    }
-    {
-        uid_t uid = getuid();
-        char num[16]; itoa((int)uid, num);
-        const char *pfx = "\033[33mUser\033[0m: uid=";
-        int pl = strlen(pfx);
-        memcpy(lines[n], pfx, pl);
-        memcpy(lines[n] + pl, num, strlen(num) + 1); n++;
-    }
+
+    snprintf(lines[n++], sizeof(lines[0]), "\033[33mShell\033[0m: cactsole %s",
+             CACTSOLE_VERSION);
+    snprintf(lines[n++], sizeof(lines[0]), "\033[33mUser\033[0m: uid=%d",
+             (int)getuid());
 
     int lw = 0;
     for (int k = 0; logo[k]; k++) {
@@ -288,7 +456,7 @@ int cact_ub_sysinfo(char **argv, int argc) {
 
     int i = 0;
     while (logo[i]) {
-        char buf[128];
+        char buf[224];
         int pos = 0;
         const char *col = (i < 12) ? "\033[32m" : "\033[33m";
         memcpy(buf + pos, col, 5); pos += 5;
@@ -309,7 +477,7 @@ int cact_ub_sysinfo(char **argv, int argc) {
         i++;
     }
     while (i < n) {
-        char buf[128];
+        char buf[224];
         int pos = 0;
         for (int s = 0; s < lw + 2; s++)
             buf[pos++] = ' ';
@@ -348,14 +516,19 @@ static unsigned parse_u32(const char *s) {
     return (unsigned)atoi(s);
 }
 
+static const char modload_usage[] =
+    "usage: modload PATH [VENDOR_ID DEVICE_ID]\n"
+    "  IDs omitted: use cact_pci_* manifest inside the .cctk\n"
+    "  example: modload virtio_net.cctk\n"
+    "  example: modload /lib/virtio_net.cctk 0x1AF4 0x1041\n";
+
 int cact_ub_modload(char **argv, int argc) {
+    if (argc >= 2 && strcmp(argv[1], "--help") == 0) {
+        write(STDOUT_FILENO, modload_usage, sizeof(modload_usage) - 1);
+        return 0;
+    }
     if (argc < 2) {
-        static const char usage[] =
-            "usage: modload PATH [VENDOR_ID DEVICE_ID]\n"
-            "  IDs omitted: use cact_pci_* manifest inside the .cctk\n"
-            "  example: modload virtio_net.cctk\n"
-            "  example: modload /lib/virtio_net.cctk 0x1AF4 0x1041\n";
-        write(STDERR_FILENO, usage, sizeof(usage) - 1);
+        write(STDERR_FILENO, modload_usage, sizeof(modload_usage) - 1);
         return 1;
     }
     unsigned vid, did;
@@ -366,9 +539,7 @@ int cact_ub_modload(char **argv, int argc) {
         vid = parse_u32(argv[2]);
         did = parse_u32(argv[3]);
     } else {
-        static const char usage[] =
-            "usage: modload PATH [VENDOR_ID DEVICE_ID]\n";
-        write(STDERR_FILENO, usage, sizeof(usage) - 1);
+        write(STDERR_FILENO, modload_usage, sizeof(modload_usage) - 1);
         return 1;
     }
     int rc = module_load(argv[1], vid, did);
@@ -403,11 +574,18 @@ int cact_ub_modload(char **argv, int argc) {
     return 1;
 }
 
+static const char modunload_usage[] =
+    "usage: modunload [PCI_INDEX|DRIVER_NAME]\n"
+    "  no args: unload usermod slot\n"
+    "  number:  same as [pci N] in /dev/modinfo\n";
+
 int cact_ub_modunload(char **argv, int argc) {
+    if (argc >= 2 && strcmp(argv[1], "--help") == 0) {
+        write(STDOUT_FILENO, modunload_usage, sizeof(modunload_usage) - 1);
+        return 0;
+    }
     if (argc > 2) {
-        write(STDERR_FILENO, "usage: modunload [PCI_INDEX|DRIVER_NAME]\n", 41);
-        write(STDERR_FILENO, "  no args: unload usermod slot\n", 31);
-        write(STDERR_FILENO, "  number:  same as [pci N] in /dev/modinfo\n", 43);
+        write(STDERR_FILENO, modunload_usage, sizeof(modunload_usage) - 1);
         return 1;
     }
     const char *target = (argc == 2) ? argv[1] : NULL;
@@ -438,9 +616,15 @@ int cact_ub_modunload(char **argv, int argc) {
     return 1;
 }
 
+static const char run_usage[] = "usage: run /path/to/program [args...]\n";
+
 int cact_ub_run(char **argv, int argc) {
+    if (argc >= 2 && strcmp(argv[1], "--help") == 0) {
+        write(STDOUT_FILENO, run_usage, sizeof(run_usage) - 1);
+        return 0;
+    }
     if (argc < 2) {
-        write(STDERR_FILENO, "usage: run /path/to/program [args...]\n", 38);
+        write(STDERR_FILENO, run_usage, sizeof(run_usage) - 1);
         return 1;
     }
 
@@ -486,4 +670,101 @@ int cact_ub_run(char **argv, int argc) {
         return 1;
     }
     return (status >> 8) & 0xff;
+}
+
+/* ── Питание ────────────────────────────────────────────────────────────────
+ *
+ * Команды не трогают /dev/sys напрямую: они просят системный демон powerd по
+ * его AF_UNIX-сокету — так же, как systemctl просит logind.  Если демон не
+ * поднят, запрос уходит в ядро напрямую через reboot(2), чтобы команда не
+ * «повисала» без сервиса.  suspend() возвращается только после пробуждения. */
+
+#define POWERD_SOCK "/run/powerd.sock"
+
+static int powerd_ask(const char *verb) {
+    struct sockaddr_un sa;
+    char line[64];
+    int fd, n;
+
+    fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+
+    memset(&sa, 0, sizeof(sa));
+    sa.sun_family = AF_UNIX;
+    strncpy(sa.sun_path, POWERD_SOCK, sizeof(sa.sun_path) - 1);
+    if (connect(fd, (struct sockaddr *)&sa, sizeof(sa)) != 0) {
+        close(fd);
+        return -1;
+    }
+
+    n = 0;
+    for (const char *p = verb; *p && n < (int)sizeof(line) - 2; p++)
+        line[n++] = *p;
+    line[n++] = '\n';
+    if (write(fd, line, (uint32_t)n) != n) {
+        close(fd);
+        return -1;
+    }
+
+    char rbuf[64];
+    int r = (int)read(fd, rbuf, sizeof(rbuf));
+    close(fd);
+    if (r > 0)
+        write(STDOUT_FILENO, rbuf, (uint32_t)r);
+    return 0;
+}
+
+static int power_cmd(const char *verb, int fallback_cmd) {
+    if (powerd_ask(verb) == 0)
+        return 0;
+
+    if (reboot(fallback_cmd) == 0)
+        return 0;
+
+    write(STDERR_FILENO, "power: powerd unreachable and reboot() failed\n", 45);
+    return 1;
+}
+
+static const char poweroff_usage[] = "usage: poweroff\n";
+
+int cact_ub_poweroff(char **argv, int argc) {
+    if (argc >= 2 && strcmp(argv[1], "--help") == 0) {
+        write(STDOUT_FILENO, poweroff_usage, sizeof(poweroff_usage) - 1);
+        return 0;
+    }
+    (void)argv; (void)argc;
+    return power_cmd("poweroff", RB_POWER_OFF);
+}
+
+static const char reboot_usage[] = "usage: reboot\n";
+
+int cact_ub_reboot(char **argv, int argc) {
+    if (argc >= 2 && strcmp(argv[1], "--help") == 0) {
+        write(STDOUT_FILENO, reboot_usage, sizeof(reboot_usage) - 1);
+        return 0;
+    }
+    (void)argv; (void)argc;
+    return power_cmd("reboot", RB_AUTOBOOT);
+}
+
+static const char halt_usage[] = "usage: halt\n";
+
+int cact_ub_halt(char **argv, int argc) {
+    if (argc >= 2 && strcmp(argv[1], "--help") == 0) {
+        write(STDOUT_FILENO, halt_usage, sizeof(halt_usage) - 1);
+        return 0;
+    }
+    (void)argv; (void)argc;
+    return power_cmd("halt", RB_HALT_SYSTEM);
+}
+
+static const char suspend_usage[] = "usage: suspend\n";
+
+int cact_ub_suspend(char **argv, int argc) {
+    if (argc >= 2 && strcmp(argv[1], "--help") == 0) {
+        write(STDOUT_FILENO, suspend_usage, sizeof(suspend_usage) - 1);
+        return 0;
+    }
+    (void)argv; (void)argc;
+    return power_cmd("suspend", RB_SUSPEND);
 }

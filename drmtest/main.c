@@ -542,9 +542,25 @@ static void test_modifiers(int fd, uint32_t handle, uint32_t w, uint32_t h,
         printf("drmtest: ADDFB2(modifier) fb_id=%u\n", (unsigned)f2.fb_id);
 }
 
+/* Printed for `drmtest --help`. */
+static const char drmtest_usage[] =
+    "usage: drmtest [--help]\n"
+    "\n"
+    "Smoke-test the CactOS DRM/KMS core by driving /dev/dri/card0 with raw DRM\n"
+    "ioctls: KMS resources, connectors and modes, a dumb buffer that is mapped\n"
+    "and turned into a framebuffer, blob properties (including the connector\n"
+    "EDID blob), cursor, universal planes, the atomic API, vblank waits,\n"
+    "syncobj and format modifiers.\n"
+    "\n"
+    "Every check prints a line 'drmtest: <what> = <rc>' and the run ends with a\n"
+    "pass/fail summary.  Exit status is 0 when every check passed, non-zero\n"
+    "otherwise.\n"
+    "\n"
+    "  --help      print this help and exit\n";
+
 /* ── main ───────────────────────────────────────────────────────────────── */
 
-int main(void) {
+int main(int argc, char **argv) {
     struct drm_mode_card_res res;
     struct drm_mode_get_connector gc;
     struct drm_mode_create_dumb dumb;
@@ -557,6 +573,11 @@ int main(void) {
     void *mapped;
     int fd;
     int rc;
+
+    if (argc > 1 && !strcmp(argv[1], "--help")) {
+        printf("%s", drmtest_usage);
+        return 0;
+    }
 
     fd = open("/dev/dri/card0", O_RDWR);
     if (fd < 0) {

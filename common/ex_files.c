@@ -14,7 +14,13 @@
 #include <dirent.h>
 #include <syscall.h>
 
+static const char ls_usage[] = "usage: ls [PATH]\n";
+
 int cact_ub_ls(char **argv, int argc) {
+    if (argc >= 2 && strcmp(argv[1], "--help") == 0) {
+        write(STDOUT_FILENO, ls_usage, sizeof(ls_usage) - 1);
+        return 0;
+    }
     const char *path = (argc >= 2) ? argv[1] : ".";
     int fd = open(path, O_RDONLY, 0);
     if (fd < 0) {
@@ -39,8 +45,14 @@ int cact_ub_ls(char **argv, int argc) {
     return 0;
 }
 
+static const char mkdir_usage[] = "usage: mkdir DIR...\n";
+
 int cact_ub_mkdir(char **argv, int argc) {
-    if (argc < 2) { write(STDERR_FILENO, "usage: mkdir DIR...\n", 20); return 1; }
+    if (argc >= 2 && strcmp(argv[1], "--help") == 0) {
+        write(STDOUT_FILENO, mkdir_usage, sizeof(mkdir_usage) - 1);
+        return 0;
+    }
+    if (argc < 2) { write(STDERR_FILENO, mkdir_usage, sizeof(mkdir_usage) - 1); return 1; }
     int i, ret = 0;
     for (i = 1; i < argc; i++) {
         if (mkdir(argv[i], 0755) != 0) {
@@ -53,8 +65,14 @@ int cact_ub_mkdir(char **argv, int argc) {
     return ret;
 }
 
+static const char rmdir_usage[] = "usage: rmdir DIR...\n";
+
 int cact_ub_rmdir(char **argv, int argc) {
-    if (argc < 2) { write(STDERR_FILENO, "usage: rmdir DIR...\n", 20); return 1; }
+    if (argc >= 2 && strcmp(argv[1], "--help") == 0) {
+        write(STDOUT_FILENO, rmdir_usage, sizeof(rmdir_usage) - 1);
+        return 0;
+    }
+    if (argc < 2) { write(STDERR_FILENO, rmdir_usage, sizeof(rmdir_usage) - 1); return 1; }
     int i, ret = 0;
     for (i = 1; i < argc; i++) {
         if (rmdir(argv[i]) != 0) {
@@ -67,8 +85,14 @@ int cact_ub_rmdir(char **argv, int argc) {
     return ret;
 }
 
+static const char tch_usage[] = "usage: tch FILE...\n";
+
 int cact_ub_tch(char **argv, int argc) {
-    if (argc < 2) { write(STDERR_FILENO, "usage: tch FILE...\n", 19); return 1; }
+    if (argc >= 2 && strcmp(argv[1], "--help") == 0) {
+        write(STDOUT_FILENO, tch_usage, sizeof(tch_usage) - 1);
+        return 0;
+    }
+    if (argc < 2) { write(STDERR_FILENO, tch_usage, sizeof(tch_usage) - 1); return 1; }
     int i, ret = 0;
     for (i = 1; i < argc; i++) {
         int fd = open(argv[i], O_WRONLY | O_CREAT, 0644);
@@ -84,8 +108,14 @@ int cact_ub_tch(char **argv, int argc) {
     return ret;
 }
 
+static const char rm_usage[] = "usage: rm FILE...\n";
+
 int cact_ub_rm(char **argv, int argc) {
-    if (argc < 2) { write(STDERR_FILENO, "usage: rm FILE...\n", 18); return 1; }
+    if (argc >= 2 && strcmp(argv[1], "--help") == 0) {
+        write(STDOUT_FILENO, rm_usage, sizeof(rm_usage) - 1);
+        return 0;
+    }
+    if (argc < 2) { write(STDERR_FILENO, rm_usage, sizeof(rm_usage) - 1); return 1; }
     int i, ret = 0;
     for (i = 1; i < argc; i++) {
         if (unlink(argv[i]) != 0) {
@@ -98,7 +128,13 @@ int cact_ub_rm(char **argv, int argc) {
     return ret;
 }
 
+static const char cat_usage[] = "usage: cat [FILE...]\n";
+
 int cact_ub_cat(char **argv, int argc) {
+    if (argc >= 2 && strcmp(argv[1], "--help") == 0) {
+        write(STDOUT_FILENO, cat_usage, sizeof(cat_usage) - 1);
+        return 0;
+    }
     if (argc < 2) {
         char buf[512];
         int n;
@@ -125,8 +161,14 @@ int cact_ub_cat(char **argv, int argc) {
     return ret;
 }
 
+static const char wrt_usage[] = "usage: wrt FILE [text...]\n";
+
 int cact_ub_wrt(char **argv, int argc) {
-    if (argc < 2) { write(STDERR_FILENO, "usage: wrt FILE [text...]\n", 26); return 1; }
+    if (argc >= 2 && strcmp(argv[1], "--help") == 0) {
+        write(STDOUT_FILENO, wrt_usage, sizeof(wrt_usage) - 1);
+        return 0;
+    }
+    if (argc < 2) { write(STDERR_FILENO, wrt_usage, sizeof(wrt_usage) - 1); return 1; }
     int fd = open(argv[1], O_WRONLY | O_TRUNC, 0);
     if (fd < 0) {
         write(STDERR_FILENO, "wrt: file not found: ", 21);
@@ -146,8 +188,14 @@ int cact_ub_wrt(char **argv, int argc) {
     return 0;
 }
 
+static const char stat_usage[] = "usage: stat FILE...\n";
+
 int cact_ub_stat(char **argv, int argc) {
-    if (argc < 2) { write(STDERR_FILENO, "usage: stat FILE...\n", 20); return 1; }
+    if (argc >= 2 && strcmp(argv[1], "--help") == 0) {
+        write(STDOUT_FILENO, stat_usage, sizeof(stat_usage) - 1);
+        return 0;
+    }
+    if (argc < 2) { write(STDERR_FILENO, stat_usage, sizeof(stat_usage) - 1); return 1; }
     int i, ret = 0;
     for (i = 1; i < argc; i++) {
         struct stat st;
@@ -182,8 +230,14 @@ int cact_ub_stat(char **argv, int argc) {
     return ret;
 }
 
+static const char mv_usage[] = "usage: mv SRC DST\n";
+
 int cact_ub_mv(char **argv, int argc) {
-    if (argc < 3) { write(STDERR_FILENO, "usage: mv SRC DST\n", 18); return 1; }
+    if (argc >= 2 && strcmp(argv[1], "--help") == 0) {
+        write(STDOUT_FILENO, mv_usage, sizeof(mv_usage) - 1);
+        return 0;
+    }
+    if (argc < 3) { write(STDERR_FILENO, mv_usage, sizeof(mv_usage) - 1); return 1; }
     if (rename(argv[1], argv[2]) != 0) {
         write(STDERR_FILENO, "mv: rename failed\n", 18);
         return 1;
@@ -191,11 +245,17 @@ int cact_ub_mv(char **argv, int argc) {
     return 0;
 }
 
+static const char ln_usage[] = "usage: ln [-s] SRC DST\n";
+
 int cact_ub_ln(char **argv, int argc) {
     int soft = 0, base = 1;
+    if (argc >= 2 && strcmp(argv[1], "--help") == 0) {
+        write(STDOUT_FILENO, ln_usage, sizeof(ln_usage) - 1);
+        return 0;
+    }
     if (argc >= 2 && strcmp(argv[1], "-s") == 0) { soft = 1; base = 2; }
     if (argc < base + 2) {
-        write(STDERR_FILENO, "usage: ln [-s] SRC DST\n", 23);
+        write(STDERR_FILENO, ln_usage, sizeof(ln_usage) - 1);
         return 1;
     }
     int r = soft
@@ -208,8 +268,14 @@ int cact_ub_ln(char **argv, int argc) {
     return 0;
 }
 
+static const char readlink_usage[] = "usage: readlink PATH\n";
+
 int cact_ub_readlink(char **argv, int argc) {
-    if (argc < 2) { write(STDERR_FILENO, "usage: readlink PATH\n", 21); return 1; }
+    if (argc >= 2 && strcmp(argv[1], "--help") == 0) {
+        write(STDOUT_FILENO, readlink_usage, sizeof(readlink_usage) - 1);
+        return 0;
+    }
+    if (argc < 2) { write(STDERR_FILENO, readlink_usage, sizeof(readlink_usage) - 1); return 1; }
     char buf[512];
     int n = (int)readlink(argv[1], buf, sizeof(buf) - 1);
     if (n < 0) {

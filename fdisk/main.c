@@ -42,23 +42,28 @@ static int      g_dirty;
 
 /* ---- small helpers -------------------------------------------------------- */
 
+/* Printed both for a usage error and for `fdisk --help`. */
+static const char fdisk_usage[] =
+    "usage: fdisk <device|image> [verb] [args]\n"
+    "\n"
+    "  device  block node (e.g. /dev/sda) or a raw disk image file\n"
+    "\n"
+    "verbs (one-shot; without a verb fdisk enters interactive mode):\n"
+    "  p           print the partition table\n"
+    "  o           create a new empty MBR (dos) label\n"
+    "  g           create a new empty GPT label\n"
+    "  n first end add a partition (numbers in sectors, '+' means size:\n"
+    "              end='+100M', first='default' or a sector)\n"
+    "  d <num>     delete partition number <num>\n"
+    "  t <num> <t> change type: MBR '83'/'82'/'ef'/..., GPT linux/swap/efi/msdata\n"
+    "  b <num>     toggle the MBR bootable flag\n"
+    "  l           list known types\n"
+    "  w           write the table and (on CactOS) rescan the disk\n"
+    "\n"
+    "  --help      print this help and exit\n";
+
 static void usage(void) {
-    printf(
-        "usage: fdisk <device|image> [verb] [args]\n"
-        "\n"
-        "  device  block node (e.g. /dev/sda) or a raw disk image file\n"
-        "\n"
-        "verbs (one-shot; without a verb fdisk enters interactive mode):\n"
-        "  p           print the partition table\n"
-        "  o           create a new empty MBR (dos) label\n"
-        "  g           create a new empty GPT label\n"
-        "  n first end add a partition (numbers in sectors, '+' means size:\n"
-        "              end='+100M', first='default' or a sector)\n"
-        "  d <num>     delete partition number <num>\n"
-        "  t <num> <t> change type: MBR '83'/'82'/'ef'/..., GPT linux/swap/efi/msdata\n"
-        "  b <num>     toggle the MBR bootable flag\n"
-        "  l           list known types\n"
-        "  w           write the table and (on CactOS) rescan the disk\n");
+    printf("%s", fdisk_usage);
 }
 
 static uint64_t parse_num(const char *s, int *ok) {
@@ -583,6 +588,10 @@ static int run_argv(ptab_t *t, int argc, char **argv) {
 }
 
 int main(int argc, char **argv) {
+    if (argc >= 2 && !strcmp(argv[1], "--help")) {
+        usage();
+        return 0;
+    }
     if (argc < 2) {
         usage();
         return 1;

@@ -10,19 +10,37 @@
 #include <string.h>
 #include <stat.h>
 
+static const char true_usage[] = "usage: true\n";
+
 int cact_ub_true(char **argv, int argc) {
+    if (argc >= 2 && strcmp(argv[1], "--help") == 0) {
+        write(STDOUT_FILENO, true_usage, sizeof(true_usage) - 1);
+        return 0;
+    }
     (void)argv;
     (void)argc;
     return 0;
 }
 
+static const char false_usage[] = "usage: false\n";
+
 int cact_ub_false(char **argv, int argc) {
+    if (argc >= 2 && strcmp(argv[1], "--help") == 0) {
+        write(STDOUT_FILENO, false_usage, sizeof(false_usage) - 1);
+        return 0;
+    }
     (void)argv;
     (void)argc;
     return 1;
 }
 
+static const char whoami_usage[] = "usage: whoami\n";
+
 int cact_ub_whoami(char **argv, int argc) {
+    if (argc >= 2 && strcmp(argv[1], "--help") == 0) {
+        write(STDOUT_FILENO, whoami_usage, sizeof(whoami_usage) - 1);
+        return 0;
+    }
     (void)argv;
     (void)argc;
     uid_t uid = getuid();
@@ -38,7 +56,13 @@ int cact_ub_whoami(char **argv, int argc) {
     return 0;
 }
 
+static const char id_usage[] = "usage: id\n";
+
 int cact_ub_id(char **argv, int argc) {
+    if (argc >= 2 && strcmp(argv[1], "--help") == 0) {
+        write(STDOUT_FILENO, id_usage, sizeof(id_usage) - 1);
+        return 0;
+    }
     (void)argv;
     (void)argc;
     char num[16];
@@ -63,9 +87,15 @@ int cact_ub_id(char **argv, int argc) {
     return 0;
 }
 
+static const char chmod_usage[] = "usage: chmod MODE FILE...\n";
+
 int cact_ub_chmod(char **argv, int argc) {
+    if (argc >= 2 && strcmp(argv[1], "--help") == 0) {
+        write(STDOUT_FILENO, chmod_usage, sizeof(chmod_usage) - 1);
+        return 0;
+    }
     if (argc < 3) {
-        write(STDERR_FILENO, "usage: chmod MODE FILE...\n", 26);
+        write(STDERR_FILENO, chmod_usage, sizeof(chmod_usage) - 1);
         return 1;
     }
     int mode = 0;
@@ -90,9 +120,15 @@ int cact_ub_chmod(char **argv, int argc) {
     return ret;
 }
 
+static const char chown_usage[] = "usage: chown OWNER[:GROUP] FILE...\n";
+
 int cact_ub_chown(char **argv, int argc) {
+    if (argc >= 2 && strcmp(argv[1], "--help") == 0) {
+        write(STDOUT_FILENO, chown_usage, sizeof(chown_usage) - 1);
+        return 0;
+    }
     if (argc < 3) {
-        write(STDERR_FILENO, "usage: chown OWNER[:GROUP] FILE...\n", 35);
+        write(STDERR_FILENO, chown_usage, sizeof(chown_usage) - 1);
         return 1;
     }
     const char *spec = argv[1];
@@ -126,7 +162,13 @@ int cact_ub_chown(char **argv, int argc) {
     return ret;
 }
 
+static const char version_usage[] = "usage: version\n";
+
 int cact_ub_version(char **argv, int argc) {
+    if (argc >= 2 && strcmp(argv[1], "--help") == 0) {
+        write(STDOUT_FILENO, version_usage, sizeof(version_usage) - 1);
+        return 0;
+    }
     (void)argv;
     (void)argc;
     static const char msg[] = "cactsole " CACTSOLE_VERSION "\n";

@@ -181,10 +181,23 @@ static int df_show_device(const char *devarg, const char *mounted_on) {
     return 0;
 }
 
+static const char df_usage[] =
+    "usage: df [OPTION]... [PATH]...\n"
+    "Show free space on mounted ext4 filesystems.\n"
+    "With no PATH, list every ext4 entry of the mount table (/proc/mounts).\n"
+    "  -h, --human-readable  human-readable sizes (default)\n"
+    "  -k                    same as --human-readable\n"
+    "  -H, --si              same as --human-readable\n";
+
 int cact_ub_df(char **argv, int argc) {
     int human = 1;   /* единицы K/M/G включены по умолчанию */
     (void)human;
     int args_start = 1;
+
+    if (argc >= 2 && strcmp(argv[1], "--help") == 0) {
+        write(STDOUT_FILENO, df_usage, sizeof(df_usage) - 1);
+        return 0;
+    }
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--human-readable") == 0) {

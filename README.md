@@ -33,7 +33,7 @@
 | Component | Role |
 |-----------|------|
 | **[CactLib-x86_32](https://github.com/QwaYer/CactLib-x86_32)** | **`clibc.so`** + **`build/pic/start.o`** — required for every link line |
-| **[Cactsole-x86_32](https://github.com/QwaYer/Cactsole-x86_32)** | Interactive shell; heavy builtins live here as **ELFs** under **`/bin`** (see [`builtins/files_help.c`](../Cactsole-x86_32/src/builtins/files_help.c) vs **`common/ex_*.c`**) |
+| **[Cactsole-x86_32](https://github.com/QwaYer/Cactsole-x86_32)** | Interactive shell; it does **not** describe these tools — **`help <tool>`** runs the tool with **`--help`** and each tool documents itself |
 | **[LocalRepoCactOS](../LocalRepoCactOS)** | **`make userbins`** → **`make install`** here before **`cctkfs.img`** is packed |
 | **[CactOS-x86_32](https://github.com/QwaYer/CactOS-x86_32)** | **Workspace integrator** — sets **`CACTLIB`**, **`CACTSOLEINC`**, **`LR_*`**, then **`LocalRepo`** + **kernel** + **CactBridge** |
 | **[CactKernel-x86_32](https://github.com/QwaYer/CactKernel-x86_32)** | **binfs** / **sbinfs** overlay **`/bin/*`** and **`/sbin/*`** from the **cctkfs** module on top of disk-backed FS |
@@ -95,6 +95,7 @@ CactUserBins-x86_32/
 | Topic | Detail |
 |-------|--------|
 | **Why one ELF per tool** | Smaller individual binaries than a busybox-style monolith; **`--gc-sections`** keeps only the **`main`** and **`cact_ub_*`** paths each `main.c` calls |
+| **Self-documenting tools** | Every tool handles **`--help`** as its first argument: it prints its own usage to **stdout** and exits **0**. Usage text is defined once per tool and shared with its argument-error path, so the two cannot drift. This is what **cactsole**'s **`help <tool>`** relies on — the shell stores no description of these programs. Only the long form **`--help`** is a help flag; **`-h`** is not, because it already means **`--human-readable`** for **`df`**. **`uxtest`** is an exception: it is a smoke test run as **`/bin/init`** and takes no arguments. |
 | **FHS-style paths** | **`sbinfs`** exposes **`/sbin/*`** for privileged-style tools (`kill`, `su`, PCI **`modload`** / **`modunload`**, **`ping`**, **`dhcp`**, **`dns`**, disk/fs tools) |
 | **Syscall drift** | If **`syscall.h`** / libc numbers change in CactLib, rebuild **libc**, then **re-link** cactsole, **CactUserBins**, cgoct, and any other dynamic ELFs |
 

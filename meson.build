@@ -80,12 +80,14 @@ apps = [
   'chmod', 'chown', 'version', 'nconn', 'net', 'ping', 'dhcp', 'dns', 'ip',
   'uxtest', 'nc', 'wget', 'dd', 'df', 'grep', 'fdisk', 'mkfs.ext4',
   'mkfs.fat32', 'cact-rootfs', 'drmtest',
+  'poweroff', 'reboot', 'halt', 'suspend',
 ]
 
 # The Makefile's SBIN_APPS list.
 sbin_apps = [
   'kill', 'su', 'modload', 'modunload', 'ping', 'dhcp', 'dns', 'ip', 'dd', 'df',
   'fdisk', 'mkfs.ext4', 'mkfs.fat32', 'cact-rootfs',
+  'poweroff', 'reboot', 'halt', 'suspend',
 ]
 
 # The Makefile's dedicated link lines: no common/ objects, one extra object.
@@ -108,7 +110,9 @@ common_lib = static_library('common',
     'common/ex_net.c',
     'common/ex_sys.c',
   ),
-  c_args: c_args)
+  # ex_sys.c reads the current KMS mode for sysinfo, so the shared objects
+  # compile against the same DRM uapi headers drmtest uses.
+  c_args: c_args + ['-I' + drmuapi])
 
 app_bins = []
 foreach app : apps

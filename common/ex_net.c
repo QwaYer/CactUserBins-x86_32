@@ -105,10 +105,17 @@ static void fill_sin(struct sockaddr_in *a, uint32_t ip_h, uint16_t port_h) {
 /*  nconn IP PORT [TEXT...]  — простой TCP-клиент                             */
 /* ────────────────────────────────────────────────────────────────────────── */
 
+static const char nconn_usage[] =
+    "usage: nconn IP PORT [TEXT...]\n"
+    "       шлёт TEXT (или 'PING\\n' по умолчанию) и читает ответ\n";
+
 int cact_ub_nconn(char **argv, int argc) {
+    if (argc >= 2 && strcmp(argv[1], "--help") == 0) {
+        w(nconn_usage);
+        return 0;
+    }
     if (argc < 3) {
-        we("usage: nconn IP PORT [TEXT...]\n"
-           "       шлёт TEXT (или 'PING\\n' по умолчанию) и читает ответ\n");
+        we(nconn_usage);
         return 1;
     }
     uint32_t ip;
@@ -172,17 +179,29 @@ int cact_ub_nconn(char **argv, int argc) {
     return (n < 0) ? 1 : 0;
 }
 
+static const char net_usage[] = "usage: net IP PORT [TEXT...]\n";
+
 int cact_ub_net(char **argv, int argc) {
+    if (argc >= 2 && strcmp(argv[1], "--help") == 0) {
+        w(net_usage);
+        return 0;
+    }
     if (argc < 3) {
-        we("usage: net IP PORT [TEXT...]\n");
+        we(net_usage);
         return 1;
     }
     return cact_ub_nconn(argv, argc);
 }
 
+static const char ping_usage[] = "usage: ping IP [-c COUNT]\n";
+
 int cact_ub_ping(char **argv, int argc) {
+    if (argc >= 2 && strcmp(argv[1], "--help") == 0) {
+        w(ping_usage);
+        return 0;
+    }
     if (argc < 2) {
-        we("usage: ping IP [-c COUNT]\n");
+        we(ping_usage);
         return 1;
     }
 
@@ -283,7 +302,15 @@ static int dhcp_get_opt_u8(const uint8_t *opts, int opts_len, uint8_t key, uint8
 
 static uint32_t g_dns_ip_h = 0x08080808u;
 
+static const char dhcp_usage[] =
+    "usage: dhcp\n"
+    "       DHCP discover/request, применяет IP/маску/шлюз/DNS к сетевой карте\n";
+
 int cact_ub_dhcp(char **argv, int argc) {
+    if (argc >= 2 && strcmp(argv[1], "--help") == 0) {
+        w(dhcp_usage);
+        return 0;
+    }
     (void)argv; (void)argc;
     int fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (fd < 0) { perr("dhcp", "socket", fd); return 1; }
@@ -515,9 +542,15 @@ static int dns_skip_name(const uint8_t *pkt, int pkt_len, int off) {
     return -1;
 }
 
+static const char dns_usage[] = "usage: dns HOST [DNS_IP]\n";
+
 int cact_ub_dns(char **argv, int argc) {
+    if (argc >= 2 && strcmp(argv[1], "--help") == 0) {
+        w(dns_usage);
+        return 0;
+    }
     if (argc < 2) {
-        we("usage: dns HOST [DNS_IP]\n");
+        we(dns_usage);
         return 1;
     }
     const char *host = argv[1];
@@ -913,24 +946,27 @@ static int ip_cmd_route_del(char **argv, int argc) {
     return ip_set_cfg(&a);
 }
 
-static void ip_usage(void) {
-    we("usage: ip [ addr | link | route ] ...\n"
-       "  ip addr show [dev IF] | ip addr add IP[/P] dev IF | "
-       "ip addr del IP[/P] dev IF | ip addr flush [dev IF]\n"
-       "  ip link show [dev IF]\n"
-       "  ip route show | ip route add default via GW | ip route del default\n");
-}
+static const char ip_usage[] =
+    "usage: ip [ addr | link | route ] ...\n"
+    "  ip addr show [dev IF] | ip addr add IP[/P] dev IF | "
+    "ip addr del IP[/P] dev IF | ip addr flush [dev IF]\n"
+    "  ip link show [dev IF]\n"
+    "  ip route show | ip route add default via GW | ip route del default\n";
 
 int cact_ub_ip(char **argv, int argc) {
+    if (argc >= 2 && strcmp(argv[1], "--help") == 0) {
+        w(ip_usage);
+        return 0;
+    }
     if (argc < 2) {
-        ip_usage();
+        we(ip_usage);
         return 1;
     }
     int base = 1;
     /* «ip -4 addr show» — опции просто пропускаем */
     while (base < argc && argv[base][0] == '-') base++;
     if (base >= argc) {
-        ip_usage();
+        we(ip_usage);
         return 1;
     }
     const char *obj = argv[base];
@@ -949,7 +985,7 @@ int cact_ub_ip(char **argv, int argc) {
         if (strcmp(argv[sub], "flush") == 0) {
             return ip_cmd_addr_flush(argv + sub + 1, argc - (sub + 1));
         }
-        ip_usage();
+        we(ip_usage);
         return 1;
     }
 
@@ -957,7 +993,7 @@ int cact_ub_ip(char **argv, int argc) {
         if (sub >= argc || strcmp(argv[sub], "show") == 0) {
             return ip_cmd_link_show(argv + sub + 1, argc - (sub + 1));
         }
-        ip_usage();
+        we(ip_usage);
         return 1;
     }
 
@@ -971,14 +1007,14 @@ int cact_ub_ip(char **argv, int argc) {
         if (sub + 1 < argc && strcmp(argv[sub], "del") == 0) {
             return ip_cmd_route_del(&argv[sub + 1], argc - (sub + 1));
         }
-        ip_usage();
+        we(ip_usage);
         return 1;
     }
 
     we("ip: unknown object `");
     we(obj);
     we("`\n");
-    ip_usage();
+    we(ip_usage);
     return 1;
 }
 

@@ -3,7 +3,13 @@
 #include <unistd.h>
 #include <string.h>
 
+static const char echo_usage[] = "usage: echo [ARG...]\n";
+
 int cact_ub_echo(char **argv, int argc) {
+    if (argc >= 2 && strcmp(argv[1], "--help") == 0) {
+        write(STDOUT_FILENO, echo_usage, sizeof(echo_usage) - 1);
+        return 0;
+    }
     int i;
     for (i = 1; i < argc; i++) {
         write(STDOUT_FILENO, argv[i], strlen(argv[i]));
