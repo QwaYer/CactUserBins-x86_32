@@ -1,17 +1,17 @@
 /*
- * ex_df.c — df: свободное место на смонтированных ext4.
+ * ex_df.c — df: free space on mounted ext4.
  *
- *   df                     — показать всё из /proc/mounts
- *   df PATH                — показать одно устройство/точку монтирования
+ *   df                     — show everything from /proc/mounts
+ *   df PATH                — show one device/mount point
  *
- * Список монтирований берётся из /proc/mounts (формат Linux: dev target
- * fstype ...), а статистика — напрямую из суперблока ext4 первичного
- * суперблока (смещение 1024) устройства /dev/<name>: каждая запись счётчика
- * блоков s_blocks_count_lo / s_free_blocks_count_lo пересчитывается в байты
- * через s_log_block_size.  Это тот же путь, которым пользуется mkfs.ext4,
- * поэтому работает на блочных узлах CactOS (/dev/sda1 и т.п.).
+ * The mount list is taken from /proc/mounts (Linux format: dev target
+ * fstype ...), while the statistics come directly from the ext4 superblock —
+ * the primary superblock (offset 1024) of the /dev/<name> device: each counter
+ * entry s_blocks_count_lo / s_free_blocks_count_lo is recomputed into bytes
+ * via s_log_block_size.  This is the same path mkfs.ext4 uses,
+ * so it works on CactOS block nodes (/dev/sda1 and so on).
  *
- * FAT32 и прочие ФС не опрашиваются (пока только ext4).
+ * FAT32 and other filesystems are not queried (ext4 only for now).
  */
 
 #include <unistd.h>
@@ -39,7 +39,7 @@ static const char *df_mount_files[] = {
     NULL
 };
 
-/* Прочитать весь файл (до 64 КБ) в буфер; вернуть длину или -1. */
+/* Read a whole file (up to 64 KB) into the buffer; return the length or -1. */
 static long df_read_small(const char *path, char *buf, long cap) {
     int fd = open(path, O_RDONLY, 0);
     if (fd < 0) return -1;
@@ -55,7 +55,7 @@ static long df_read_small(const char *path, char *buf, long cap) {
     return n;
 }
 
-/* Загрузить таблицу монтирований из первого существующего файла. */
+/* Load the mount table from the first file that exists. */
 static int df_load_mnts(struct df_mnt *ms, int max) {
     char buf[65536];
     int count = 0;
@@ -79,12 +79,12 @@ static int df_load_mnts(struct df_mnt *ms, int max) {
             }
             line = strtok_r(NULL, "\n", &save);
         }
-        if (count > 0) return count;   /* первый файл с записями */
+        if (count > 0) return count;   /* first file with entries */
     }
     return count;
 }
 
-/* /dev/sda1 или sda1 -> путь узла для открытия. */
+/* /dev/sda1 or sda1 -> the node path to open. */
 static void df_dev_path(const char *dev, char *out, size_t n) {
     if (dev[0] == '/') {
         strncpy(out, dev, n - 1);
@@ -94,7 +94,7 @@ static void df_dev_path(const char *dev, char *out, size_t n) {
     }
 }
 
-/* Прочитать ext4-суперблок и вычислить total/used/free в байтах. */
+/* Read the ext4 superblock and compute total/used/free in bytes. */
 static int df_ext4_query(const char *devpath,
                          unsigned long long *total,
                          unsigned long long *used,
@@ -190,7 +190,7 @@ static const char df_usage[] =
     "  -H, --si              same as --human-readable\n";
 
 int cact_ub_df(char **argv, int argc) {
-    int human = 1;   /* единицы K/M/G включены по умолчанию */
+    int human = 1;   /* K/M/G units enabled by default */
     (void)human;
     int args_start = 1;
 
@@ -233,7 +233,7 @@ int cact_ub_df(char **argv, int argc) {
         int ok = 0;
         for (int i = 0; i < nm; i++) {
             if (mnts[i].fstype[0] && strcmp(mnts[i].fstype, "ext4") != 0)
-                continue;   /* пока умеем только ext4 */
+                continue;   /* only ext4 is supported for now */
             char devpath[160];
             df_dev_path(mnts[i].dev, devpath, sizeof(devpath));
             unsigned long long total = 0, used = 0, free_b = 0;
@@ -258,7 +258,7 @@ int cact_ub_df(char **argv, int argc) {
         int is_dir = (stat(arg, &st) == 0) && S_ISDIR(st.st_mode);
 
         if (is_dir) {
-            /* точка монтирования: ищем в таблице точное совпадение target */
+            /* mount point: look for an exact target match in the table */
             struct df_mnt mnts[DF_MAX_MNTS];
             int nm = df_load_mnts(mnts, DF_MAX_MNTS);
             int found = 0;

@@ -1,14 +1,14 @@
 /*
- * ex_dd.c — dd: блоковый копировальщик для CactOS.
+ * ex_dd.c — dd: a block copier for CactOS.
  *
  *   dd if=/dev/zero of=/dev/sda1 bs=1M count=64
  *   dd if=/dev/random of=/dev/sda1 bs=512 count=1024 conv=notrunc
  *
- * Словарь опций GNU-dd (подмножество): if= of= bs= ibs= obs= count= skip=
- * seek= conv=notrunc status=none.  skip/seek измеряются в блоках ibs/obs.
+ * GNU-dd option vocabulary (subset): if= of= bs= ibs= obs= count= skip=
+ * seek= conv=notrunc status=none.  skip/seek are measured in ibs/obs blocks.
  *
- * Работает с блочными узлами CactOS (/dev/sda1 — простой байтовый узел,
- * vfsdev), с обычными файлами и с символьными узлами /dev/zero,/dev/random.
+ * Works with CactOS block nodes (/dev/sda1 — a plain byte node,
+ * vfsdev), with regular files and with the character nodes /dev/zero,/dev/random.
  */
 
 #include <unistd.h>
@@ -139,7 +139,7 @@ int cact_ub_dd(char **argv, int argc) {
     int rc = 0;
     unsigned long long full = 0, part = 0, total = 0;
 
-    /* skip на входе: lseek если можно, иначе чтение-в-никуда */
+    /* skip on input: lseek if possible, otherwise read and discard */
     if (skip > 0) {
         off_t off = (off_t)(skip * ibs);
         if (in != STDIN_FILENO && off >= 0 && lseek(in, off, SEEK_SET) >= 0) {
@@ -156,7 +156,7 @@ int cact_ub_dd(char **argv, int argc) {
         }
     }
 
-    /* seek на выходе: позиционируемся */
+    /* seek on output: position the file */
     if (seek > 0) {
         off_t off = (off_t)(seek * obs);
         if (off >= 0 && lseek(out, off, SEEK_SET) < 0) {

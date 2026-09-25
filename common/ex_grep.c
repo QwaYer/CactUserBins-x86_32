@@ -1,11 +1,11 @@
 /*
- * ex_grep.c — grep: поиск текста в файлах/каталогах.
+ * ex_grep.c — grep: searching for text in files/directories.
  *
  *   grep [-i] [-n] [-v] [-c] [-l] [-r] PATTERN [FILE...]
  *
- * Паттерн — простая подстрока (без регулярных выражений).  При нескольких
- * файлах (или -r) вывод предваряется именем файла; без файлов читается
- * stdin.  Возврат: 0 — найдено, 1 — не найдено, 2 — ошибка.
+ * The pattern is a simple substring (no regular expressions).  With several
+ * files (or -r) the output is prefixed with the file name; without files
+ * stdin is read.  Return: 0 — found, 1 — not found, 2 — error.
  */
 
 #include <unistd.h>
@@ -86,9 +86,9 @@ static void g_print_line(const grep_opt_t *o, int out, const char *path,
     write(out, "\n", 1);
 }
 
-/* Обработать один открытый fd. limit>0 — читать не больше limit байт
- * (обычные файлы: их размер из stat), limit==0 — читать до EOF (stdin,
- * псевдо-файлы). Возвращает 0 = есть совпадения, 1 = нет, 2 = ошибка. */
+/* Process one open fd. limit>0 — read no more than limit bytes
+ * (regular files: their size from stat), limit==0 — read to EOF (stdin,
+ * pseudo-files). Returns 0 = matches found, 1 = none, 2 = error. */
 static int g_run_fd(int fd, const grep_opt_t *o, const char *path,
                     int show_name, unsigned long long limit) {
     gline_t L;
@@ -122,7 +122,7 @@ static int g_run_fd(int fd, const grep_opt_t *o, const char *path,
                     cnt++;
                     any = 1;
                     if (o->count || o->list_only) {
-                        /* посчитано/список — печатаем в конце/сразу */
+                        /* counted/list — print at the end/right away */
                         if (o->list_only && !stop) {
                             if (path && path[0]) {
                                 g_write_str(STDOUT_FILENO, path);
@@ -156,7 +156,7 @@ static int g_run_fd(int fd, const grep_opt_t *o, const char *path,
     }
 
     if (!stop && L.len > 0) {
-        /* последняя строка без перевода каретки */
+        /* last line without a line feed */
         ln++;
         int m = g_match(L.b, L.len,
                         (const unsigned char *)o->pat, o->patlen, o->icase);
@@ -201,10 +201,10 @@ static int g_process_file(const char *path, const grep_opt_t *o,
     struct stat st;
     if (fstat(fd, &st) == 0 && S_ISREG(st.st_mode)) {
         if (st.st_size == 0) {
-            rc = 1;          /* пустой файл — совпадений нет, не читаем */
+            rc = 1;          /* empty file — no matches, do not read */
         } else {
-            /* читаем ровно st_size байт: если драйвер ФС не отдаёт EOF
-             * на read() за концом файла, не упираемся в вечное ожидание */
+            /* read exactly st_size bytes: if the FS driver does not report EOF
+             * on read() past the end of the file, we avoid an endless wait */
             rc = g_run_fd(fd, o, path, show_name,
                           (unsigned long long)st.st_size);
         }

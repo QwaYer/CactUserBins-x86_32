@@ -1,9 +1,9 @@
 /*
- * builtins/sys.c — системные команды.
+ * builtins/sys.c — system commands.
  *
  *   clear / date / uptime / kill / su / sleep / free / sysinfo / run
  *   modload / modunload  — PCI .cctk kmod (root); modunload [pci-index|name]
- *   poweroff / reboot / halt / suspend — через powerd (fallback: reboot(2))
+ *   poweroff / reboot / halt / suspend — via powerd (fallback: reboot(2))
  */
 
 #include "version.h"
@@ -213,8 +213,8 @@ int cact_ub_free(char **argv, int argc) {
     return 0;
 }
 
-/* Значение строки текстового /proc-файла, начинающейся с key: текст после
- * ':' и пробелов копируется в out.  Возвращает 0, если поле найдено. */
+/* Value of the line of a text /proc file that starts with key: the text after
+ * ':' and spaces is copied into out.  Returns 0 if the field is found. */
 static int proc_field(const char *buf, const char *key, char *out, int cap) {
     int klen = (int)strlen(key);
     const char *p = buf;
@@ -236,7 +236,7 @@ static int proc_field(const char *buf, const char *key, char *out, int cap) {
     return -1;
 }
 
-/* Сколько строк текстового /proc-файла начинаются с key. */
+/* How many lines of a text /proc file start with key. */
 static int proc_count(const char *buf, const char *key) {
     int klen = (int)strlen(key), cnt = 0;
     const char *p = buf;
@@ -248,32 +248,32 @@ static int proc_count(const char *buf, const char *key) {
     return cnt;
 }
 
-/* struct drm_mode_get_connector::connection — ядро кладёт сюда DRM_MODE_* из
- * drm_drv.h; в uapi-заголовке этой пары констант нет. */
+/* struct drm_mode_get_connector::connection — the kernel puts DRM_MODE_* from
+ * drm_drv.h here; this pair of constants is absent from the uapi header. */
 #define DRM_MODE_CONNECTED 1
 
-/* /dev/fb0 — загрузочный фреймбуфер (multiboot).  Ядро держит
- * struct fb_var_screeninfo приватно (fs/vfs/devfs/devfs_devices.c), поэтому
- * форма ABI повторена здесь: те же 8 полей подряд. */
+/* /dev/fb0 — the boot framebuffer (multiboot).  The kernel keeps
+ * struct fb_var_screeninfo private (fs/vfs/devfs/devfs_devices.c), so the
+ * ABI shape is repeated here: the same 8 fields in a row. */
 #define FBIOGET_VSCREENINFO 0x4600
 struct fb_var_screeninfo {
     uint32_t xres, yres, xres_virtual, yres_virtual;
     uint32_t xoffset, yoffset, bits_per_pixel, grayscale;
 };
 
-/* Откуда взялась строка Display. */
+/* Where the Display line comes from. */
 enum display_src {
-    DISP_NONE      = -1,  /* карты нет и фреймбуфера нет — строки не будет */
-    DISP_CRTC      = 0,   /* активный CRTC: этот режим реально сканируется */
-    DISP_CONNECTOR = 1,   /* preferred-режим коннектора: карта есть, modeset'а нет */
-    DISP_FB0       = 2,   /* DRM-карты нет вовсе: размер загрузочного фреймбуфера */
+    DISP_NONE      = -1,  /* no card and no framebuffer — there will be no line */
+    DISP_CRTC      = 0,   /* active CRTC: this mode is actually scanned out */
+    DISP_CONNECTOR = 1,   /* connector preferred mode: card present, no modeset yet */
+    DISP_FB0       = 2,   /* no DRM card at all: size of the boot framebuffer */
 };
 
-/* определён ниже, рядом с modload */
+/* defined below, next to modload */
 static unsigned parse_u32(const char *s);
 
-/* Карты нет: разрешение даёт загрузочный фреймбуфер — то, что выставил
- * загрузчик и на чём сейчас рисует консоль. */
+/* No card: the resolution comes from the boot framebuffer — what the
+ * bootloader set up and what the console is currently drawing on. */
 static int fb0_mode(unsigned *w, unsigned *h) {
     struct fb_var_screeninfo vi;
     int fd = open("/dev/fb0", O_RDWR);
@@ -289,9 +289,9 @@ static int fb0_mode(unsigned *w, unsigned *h) {
     return 0;
 }
 
-/* Видеоадаптер с DRM-карты: /dev/dri/card0 существует, только когда драйвер
- * зарегистрировал устройство, а DRM_IOCTL_VERSION отдаёт ops->name и версию —
- * то же, что drmGetVersion().  -1, если карты нет. */
+/* Video adapter from the DRM card: /dev/dri/card0 exists only once the driver
+ * has registered the device, and DRM_IOCTL_VERSION returns ops->name and the
+ * version — the same as drmGetVersion().  -1 if there is no card. */
 static int gpu_drm_name(char *out, int cap, int *major, int *minor, int *patch) {
     struct drm_version v;
     int fd = open("/dev/dri/card0", O_RDWR);
@@ -306,8 +306,8 @@ static int gpu_drm_name(char *out, int cap, int *major, int *minor, int *patch) 
     }
     close(fd);
 
-    /* name_len — полная длина имени: ядро копирует min(имя, буфер) и NUL не
-     * пишет, так что терминатор ставим сами. */
+    /* name_len — the full length of the name: the kernel copies min(name, buffer)
+     * and does not write a NUL, so we place the terminator ourselves. */
     int len = (int)v.name_len;
     if (len < 0) len = 0;
     if (len > cap - 1) len = cap - 1;
@@ -318,10 +318,10 @@ static int gpu_drm_name(char *out, int cap, int *major, int *minor, int *patch) 
     return 0;
 }
 
-/* Фоллбек без DRM-карты: дисплей-контроллер (class_code 0x03) среди PCI-функций
- * /dev/modinfo.  Там у каждого узла "[pci N]" напечатаны vendor_id, device_id и
- * class_code, поэтому берём их из одного блока; секцию "[drv N]" пропускаем —
- * это драйверы, а не найденное железо. */
+/* Fallback without a DRM card: the display controller (class_code 0x03) among the
+ * PCI functions of /dev/modinfo.  There each "[pci N]" node prints vendor_id,
+ * device_id and class_code, so we take them from one block; the "[drv N]"
+ * section is skipped — those are drivers, not discovered hardware. */
 static int gpu_pci_ids(unsigned *vendor, unsigned *device) {
     static char buf[16384];
     int got = nio_read_file("/dev/modinfo", buf, sizeof(buf) - 1);
@@ -403,8 +403,8 @@ static enum display_src display_mode(unsigned *w, unsigned *h, unsigned *hz) {
         return DISP_CRTC;
     }
 
-    /* CRTC ещё не включён: карта есть, поэтому спрашиваем у неё самой режим,
-     * которым она умеет сканировать. */
+    /* The CRTC is not enabled yet: the card exists, so we ask the card itself for
+     * a mode it can scan out. */
     for (uint32_t i = 0; i < res.count_connectors && i < sizeof(conns) / sizeof(conns[0]); i++) {
         struct drm_mode_get_connector cc;
         struct drm_mode_modeinfo modes[8];
@@ -500,7 +500,7 @@ int cact_ub_sysinfo(char **argv, int argc) {
                      "\033[33mUptime\033[0m: %d:%02d", h, m);
     }
 
-    /* Модель и частоту ядра ядро отдаёт в /proc/cpuinfo. */
+    /* The kernel reports the model and core frequency in /proc/cpuinfo. */
     {
         static char cpubuf[4096];
         int got = nio_read_file("/proc/cpuinfo", cpubuf, sizeof(cpubuf) - 1);
@@ -522,7 +522,7 @@ int cact_ub_sysinfo(char **argv, int argc) {
         }
     }
 
-    /* Память и swap — /proc/meminfo (значения в kB). */
+    /* Memory and swap — /proc/meminfo (values in kB). */
     {
         static char membuf[512];
         int got = nio_read_file("/proc/meminfo", membuf, sizeof(membuf) - 1);
@@ -547,8 +547,8 @@ int cact_ub_sysinfo(char **argv, int argc) {
         }
     }
 
-    /* Видеоадаптер: карта есть — спрашиваем её драйвер; карты нет — показываем
-     * дисплей-контроллер, найденный по PCI. */
+    /* Video adapter: if there is a card — ask its driver; if not — show the
+     * display controller found over PCI. */
     {
         char gname[64];
         int gmaj = 0, gmin = 0, gpat = 0;
@@ -563,8 +563,8 @@ int cact_ub_sysinfo(char **argv, int argc) {
         }
     }
 
-    /* Дисплей: карта есть — активный CRTC, иначе preferred-режим коннектора;
-     * карты нет — загрузочный фреймбуфер /dev/fb0. */
+    /* Display: with a card — the active CRTC, otherwise the connector preferred
+     * mode; without a card — the boot framebuffer /dev/fb0. */
     {
         unsigned dw = 0, dh = 0, dhz = 0;
         enum display_src src = display_mode(&dw, &dh, &dhz);
@@ -585,8 +585,8 @@ int cact_ub_sysinfo(char **argv, int argc) {
         }
     }
 
-    /* Сеть — тот же ioctl, которым пользуется `ip addr`.  nio_dev_cmd сам
-     * добавляет "/dev/", поэтому имя узла здесь без префикса. */
+    /* Network — the same ioctl that `ip addr` uses.  nio_dev_cmd adds
+     * "/dev/" itself, so the node name here has no prefix. */
     {
         cact_netcfg_get_t g;
         memset(&g, 0, sizeof(g));
@@ -601,7 +601,7 @@ int cact_ub_sysinfo(char **argv, int argc) {
                      "\033[33mNet\033[0m: (no IPv4 address)");
     }
 
-    /* Программы: считаем записи в каталогах, куда ставится CactUserBins. */
+    /* Programs: count the entries in the directories CactUserBins is installed into. */
     {
         static const char *pkgdirs[] = {"/bin", "/sbin", NULL};
         int pkg = 0;
@@ -850,12 +850,12 @@ int cact_ub_run(char **argv, int argc) {
     return (status >> 8) & 0xff;
 }
 
-/* ── Питание ────────────────────────────────────────────────────────────────
+/* ── Power ──────────────────────────────────────────────────────────────────
  *
- * Команды не трогают /dev/sys напрямую: они просят системный демон powerd по
- * его AF_UNIX-сокету — так же, как systemctl просит logind.  Если демон не
- * поднят, запрос уходит в ядро напрямую через reboot(2), чтобы команда не
- * «повисала» без сервиса.  suspend() возвращается только после пробуждения. */
+ * The commands do not touch /dev/sys directly: they ask the powerd system daemon
+ * over its AF_UNIX socket — just as systemctl asks logind.  If the daemon is not
+ * running, the request goes straight to the kernel via reboot(2) so that the
+ * command does not hang without the service.  suspend() returns only after wakeup. */
 
 #define POWERD_SOCK "/run/powerd.sock"
 

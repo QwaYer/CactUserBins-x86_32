@@ -1,5 +1,5 @@
 /*
- * builtins/files.c — операции над файлами и каталогами.
+ * builtins/files.c — file and directory operations.
  *
  *   ls / mkdir / rmdir / tch / rm / cat / wrt / stat / mv / ln / readlink
  */

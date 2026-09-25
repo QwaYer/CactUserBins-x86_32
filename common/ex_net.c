@@ -1,12 +1,12 @@
 /*
- * builtins/net.c — упрощенные сетевые команды cactsole.
+ * builtins/net.c — simplified cactsole network commands.
  *
- * Держим только базовый TCP-клиент:
+ * Only a basic TCP client is kept:
  *   nconn IP PORT [TEXT...]
- *   net   IP PORT [TEXT...]   (короткий алиас)
+ *   net   IP PORT [TEXT...]   (short alias)
  *
- * Сложные низкоуровневые команды (nsock/nopt/nlisten/nudp) удалены,
- * чтобы оставить минимальный и понятный набор.
+ * The complex low-level commands (nsock/nopt/nlisten/nudp) have been removed,
+ * to keep the set minimal and easy to understand.
  */
 
 
@@ -26,7 +26,7 @@
 #include <signal.h>
 
 /* ────────────────────────────────────────────────────────────────────────── */
-/*  Утилиты вывода                                                            */
+/*  Output utilities                                                          */
 /* ────────────────────────────────────────────────────────────────────────── */
 
 static void w(const char *s)  { write(STDOUT_FILENO, s, strlen((char *)s)); }
@@ -35,7 +35,7 @@ static void we(const char *s) { write(STDERR_FILENO, s, strlen((char *)s)); }
 static void wn(int v)  { char b[16]; itoa(v, b); w(b); }
 static void wne(int v) { char b[16]; itoa(v, b); we(b); }
 
-/* Печать IPv4 в host byte order (старший октет в битах 24..31). */
+/* Print IPv4 in host byte order (most significant octet in bits 24..31). */
 static void print_ipv4_h(uint32_t ip) {
     char b[8];
     int p[4] = {(int)((ip >> 24) & 0xFF),
@@ -48,7 +48,7 @@ static void print_ipv4_h(uint32_t ip) {
     }
 }
 
-/* Парсер «10.0.2.15» -> host byte order. 0 = OK, -1 = ошибка. */
+/* Parser for "10.0.2.15" -> host byte order. 0 = OK, -1 = error. */
 static int parse_ipv4(const char *s, uint32_t *out) {
     uint32_t r = 0;
     int dots = 0, val = 0, has_digit = 0;
@@ -99,17 +99,17 @@ static void fill_sin(struct sockaddr_in *a, uint32_t ip_h, uint16_t port_h) {
 }
 
 /* ────────────────────────────────────────────────────────────────────────── */
-/*  nsock [tcp|udp]  — голая демонстрация SYS_SOCKET                          */
+/*  nsock [tcp|udp]  — bare SYS_SOCKET demonstration                          */
 /* ────────────────────────────────────────────────────────────────────────── */
 
 /* ────────────────────────────────────────────────────────────────────────── */
-/*  nconn IP PORT [TEXT...]  — простой TCP-клиент                             */
+/*  nconn IP PORT [TEXT...]  — simple TCP client                              */
 /* ────────────────────────────────────────────────────────────────────────── */
 
 static const char nconn_usage[] =
     "usage: nconn HOST PORT [TEXT...]\n"
-    "       HOST — адрес или имя (DNS)\n"
-    "       шлёт TEXT (или 'PING\\n' по умолчанию) и читает ответ\n";
+    "       HOST — an address or a name (DNS)\n"
+    "       sends TEXT (or 'PING\\n' by default) and reads the response\n";
 
 int cact_ub_nconn(char **argv, int argc) {
     if (argc >= 2 && strcmp(argv[1], "--help") == 0) {
@@ -201,10 +201,10 @@ int cact_ub_net(char **argv, int argc) {
 
 static const char ping_usage[] =
     "usage: ping [-c COUNT] [-i SEC] [-W MS] HOST\n"
-    "       HOST — адрес или имя (DNS); -c 0 — до Ctrl-C\n"
-    "       -W MS — сколько ждать ответ (по умолчанию 2000)\n";
+    "       HOST — an address or a name (DNS); -c 0 — until Ctrl-C\n"
+    "       -W MS — how long to wait for the response (2000 by default)\n";
 
-/* Печатает значение в миллисекундах с тремя знаками после точки. */
+/* Prints a value in milliseconds with three digits after the decimal point. */
 static void w_ms_from_us(uint32_t us) {
     char b[4];
     uint32_t frac = us % 1000u;
@@ -293,7 +293,7 @@ int cact_ub_ping(char **argv, int argc) {
 }
 
 /* ────────────────────────────────────────────────────────────────────────── */
-/*  dhcp  — простой DHCP discover/offer клиент (UDP 68 -> 67)               */
+/*  dhcp  — simple DHCP discover/offer client (UDP 68 -> 67)                */
 /* ────────────────────────────────────────────────────────────────────────── */
 
 #define DHCP_MAGIC 0x63825363u
@@ -362,7 +362,7 @@ static uint32_t g_dns_ip_h = 0x08080808u;
 
 static const char dhcp_usage[] =
     "usage: dhcp\n"
-    "       DHCP discover/request, применяет IP/маску/шлюз/DNS к сетевой карте\n";
+    "       DHCP discover/request, applies IP/netmask/gateway/DNS to the network card\n";
 
 int cact_ub_dhcp(char **argv, int argc) {
     if (argc >= 2 && strcmp(argv[1], "--help") == 0) {
@@ -555,7 +555,7 @@ int cact_ub_dhcp(char **argv, int argc) {
 }
 
 /* ────────────────────────────────────────────────────────────────────────── */
-/*  dns HOST [DNS_IP]  — простой DNS A query (UDP/53)                        */
+/*  dns HOST [DNS_IP]  — simple DNS A query (UDP/53)                         */
 /* ────────────────────────────────────────────────────────────────────────── */
 
 struct dns_hdr {
@@ -706,7 +706,7 @@ int cact_ub_dns(char **argv, int argc) {
 }
 
 /* ────────────────────────────────────────────────────────────────────────── */
-/*  ip  — Linux-подобная утилита для адресов/маршрутов одной сетевой карты   */
+/*  ip  — Linux-like utility for the addresses/routes of one network card    */
 /*                                                                           */
 /*    ip addr show [dev IF]     ip addr [dev IF]                             */
 /*    ip addr add A[/P] dev IF  ip addr del A[/P] dev IF                     */
@@ -715,7 +715,7 @@ int cact_ub_dns(char **argv, int argc) {
 /*    ip route show                                                          */
 /*    ip route add default via GW   ip route del default                     */
 /*                                                                           */
-/* Управление идёт через /dev/net (CACT_NETCTL_NETCFG / _GET).               */
+/* Control goes through /dev/net (CACT_NETCTL_NETCFG / _GET).                */
 /* ────────────────────────────────────────────────────────────────────────── */
 
 #define IP_IFACE "eth0"
@@ -747,7 +747,7 @@ static void ip_print_mac(const uint8_t *mac) {
     }
 }
 
-/* Сетевое число (host order) -> адрес в buf. */
+/* Network number (host order) -> address in buf. */
 static void ip_fmt_ipv4(uint32_t v, char *buf, int cap) {
     int p[4] = {(int)((v >> 24) & 0xFF), (int)((v >> 16) & 0xFF),
                 (int)((v >> 8) & 0xFF), (int)(v & 0xFF)};
@@ -837,8 +837,8 @@ static int ip_show_addr(cact_netcfg_get_t *g, int show_link_only) {
     return 0;
 }
 
-/* Утилиты ip: карта одна (eth0), поэтому «dev IF» при разборе игнорируем,
- * но если названа чужая карта — ругаемся. */
+/* ip helpers: there is only one card (eth0), so "dev IF" is ignored when
+ * parsing, but if a foreign card is named we complain. */
 static int ip_warn_foreign_dev(char **argv, int argc) {
     for (int i = 0; i < argc; i++) {
         if (strcmp(argv[i], "dev") == 0 && i + 1 < argc) {
@@ -910,7 +910,7 @@ static int ip_cmd_addr_add(char **argv, int argc) {
     cact_netcfg_arg_t a;
     a.ip_host       = ip_h;
     a.netmask_host  = mask;
-    a.gateway_host  = g.gateway_host;   /* маршруты не трогаем */
+    a.gateway_host  = g.gateway_host;   /* routes are left untouched */
     a.dns_host      = g.dns_host;
     return ip_set_cfg(&a);
 }
@@ -930,7 +930,7 @@ static int ip_cmd_addr_del(char **argv, int argc) {
     if (ip_get_cfg(&g) < 0) return 1;
 
     cact_netcfg_arg_t a;
-    a.ip_host       = 0;                 /* снять адрес */
+    a.ip_host       = 0;                 /* remove the address */
     a.netmask_host  = 0;
     a.gateway_host  = g.gateway_host;
     a.dns_host      = g.dns_host;
@@ -1021,7 +1021,7 @@ int cact_ub_ip(char **argv, int argc) {
         return 1;
     }
     int base = 1;
-    /* «ip -4 addr show» — опции просто пропускаем */
+    /* "ip -4 addr show" — we simply skip the options */
     while (base < argc && argv[base][0] == '-') base++;
     if (base >= argc) {
         we(ip_usage);
@@ -1077,14 +1077,14 @@ int cact_ub_ip(char **argv, int argc) {
 }
 
 /* ────────────────────────────────────────────────────────────────────────── */
-/*  nc  — простой netcat: двусторонний ретранслятор stdin <-> сокет.          */
+/*  nc  — simple netcat: bidirectional relay stdin <-> socket.                */
 /*                                                                           */
-/*    nc HOST PORT            — TCP-клиент (подключиться и ретранслировать)  */
-/*    nc -l [-p] PORT         — слушать, принять одно соединение, relay      */
+/*    nc HOST PORT            — TCP client (connect and relay)               */
+/*    nc -l [-p] PORT         — listen, accept one connection, relay         */
 /*                                                                           */
-/*  Реализация: после connect()/accept() процесс раздваивается: ребёнок      */
-/*  гонит stdin -> сокет, родитель гонит сокет -> stdout. Это не требует      */
-/*  poll() на сокетах и честно работает с блокирующими read().                */
+/*  Implementation: after connect()/accept() the process forks: the child    */
+/*  drives stdin -> socket, the parent drives socket -> stdout. This needs no */
+/*  poll() on the sockets and works fine with blocking read().                */
 /* ────────────────────────────────────────────────────────────────────────── */
 
 static void nc_usage(void) {
@@ -1229,7 +1229,7 @@ int cact_ub_nc(char **argv, int argc) {
 }
 
 /* ────────────────────────────────────────────────────────────────────────── */
-/*  wget  — микро-HTTP-клиент: GET по TCP, тело ответа в файл.                */
+/*  wget  — micro HTTP client: GET over TCP, response body into a file.       */
 /*                                                                           */
 /*    wget [-o FILE] http[s]://HOST[:PORT][/PATH]                            */
 /*                                                                           */
@@ -1287,7 +1287,7 @@ static int wget_parse_url(const char *s, char *host, size_t hostsz,
     return 0;
 }
 
-/* Имя файла по умолчанию = последний компонент пути (без ? и #). */
+/* Default file name = the last path component (without ? and #). */
 static void wget_default_name(const char *path, char *out, size_t outsz) {
     const char *base = path;
     for (const char *p = path; *p; p++)
@@ -1302,8 +1302,8 @@ static void wget_default_name(const char *path, char *out, size_t outsz) {
     }
 }
 
-/* Транспорт: обычный сокет или TLS-сессия поверх него.  Ключи TLS живут
-   здесь, в процессе; ядро даёт только примитивы и проверку сертификата. */
+/* Transport: a plain socket or a TLS session on top of it.  The TLS keys live
+   here, in the process; the kernel only provides primitives and certificate checks. */
 typedef struct {
     int fd;
     cact_tls_t *tls;
@@ -1341,10 +1341,10 @@ static void tr_close(tr_t *t) {
     t->fd = -1;
 }
 
-/* Слайс-буфер для ответа: прячем излишек тела за концом заголовков.
-   Размер не фиксирован: у настоящих сайтов заголовки (CSP, cookies,
-   report-to) легко перерастают любой разумный стековый массив — github
-   отдаёт больше двух килобайт, — поэтому буфер живёт в куче. */
+/* Slice buffer for the response: the body surplus is hidden behind the end of
+   the headers.  The size is not fixed: on real sites the headers (CSP, cookies,
+   report-to) easily outgrow any reasonable stack array — github
+   returns more than two kilobytes — so the buffer lives on the heap. */
 #define W_BUF_SIZE (16 * 1024)
 
 typedef struct {
@@ -1364,14 +1364,14 @@ static int wbuf_fill(wbuf_t *b) {
     return 1;
 }
 
-/* Добрать ещё данных: сдвинуть недочитанное в начало и сделать recv. */
+/* Pull in more data: move the unread part to the front and do a recv. */
 static int wbuf_append(wbuf_t *b) {
     if (b->start > 0) {
         memmove(b->buf, b->buf + b->start, (size_t)(b->end - b->start));
         b->end -= b->start;
         b->start = 0;
     }
-    if (b->end >= b->cap) return -1;   /* заголовок слишком длинный */
+    if (b->end >= b->cap) return -1;   /* header too long */
     int n = tr_read(b->tr, b->buf + b->end, b->cap - b->end);
     if (n <= 0) return n;
     b->end += n;
@@ -1380,7 +1380,7 @@ static int wbuf_append(wbuf_t *b) {
 
 static void wbuf_free(wbuf_t *b) { free(b->buf); b->buf = 0; }
 
-/* Прочитать байт; 1 = ok, 0 = EOF, -1 = ошибка. */
+/* Read a byte; 1 = ok, 0 = EOF, -1 = error. */
 static int wbuf_get(wbuf_t *b, unsigned char *out) {
     if (b->start == b->end) {
         int rc = wbuf_fill(b);
@@ -1390,7 +1390,7 @@ static int wbuf_get(wbuf_t *b, unsigned char *out) {
     return 1;
 }
 
-/* Прочитать строку (до \n), вернуть длину без \r\n, -1 при ошибке. */
+/* Read a line (up to \n), return the length without \r\n, -1 on error. */
 static int wbuf_line(wbuf_t *b, char *out, int cap) {
     int n = 0;
     for (;;) {
@@ -1403,7 +1403,7 @@ static int wbuf_line(wbuf_t *b, char *out, int cap) {
 }
 
 
-/* ── прогресс загрузки ─────────────────────────────────────────────────── */
+/* ── download progress ─────────────────────────────────────────────────── */
 
 static void wget_size_str(unsigned long long n, char *out, int cap)
 {
@@ -1412,8 +1412,8 @@ static void wget_size_str(unsigned long long n, char *out, int cap)
     else                        snprintf(out, (size_t)cap, "%llu B", n);
 }
 
-/* Одна строка прогресса на stderr, перерисовывается через '\r'.  Когда размер
-   неизвестен (chunked или тело до закрытия), показываем только счётчик. */
+/* One progress line on stderr, redrawn via '\r'.  When the size
+   is unknown (chunked or body until close), we only show the counter. */
 static void wget_progress(const char *label, unsigned long long done, long total)
 {
     char line[128], ds[24], ts[28], bar[27];
@@ -1437,7 +1437,7 @@ static void wget_progress(const char *label, unsigned long long done, long total
     fflush(stderr);
 }
 
-/* Прочитать N байт тела. */
+/* Read N bytes of the body. */
 static int wbuf_readn(wbuf_t *b, unsigned char *out, int n) {
     while (n > 0) {
         if (b->start == b->end) {
@@ -1492,13 +1492,13 @@ static int wget_send_request(tr_t *tr, const char *host, int port, int tls,
     return 0;
 }
 
-/* Прочитать заголовки ответа. Заполняет code/clen/chunked/location.
- * Сразу за заголовками остаётся буферизованное тело. 0 = ok, -1 = error. */
+/* Read the response headers. Fills code/clen/chunked/location.
+ * Right after the headers the buffered body remains. 0 = ok, -1 = error. */
 static int wget_read_headers(wbuf_t *b, int *code, long *clen,
                              int *chunked, char *loc, int loccap) {
     *code = 0; *clen = -1; *chunked = 0; loc[0] = '\0';
     for (;;) {
-        /* ищем конец заголовков в текущем буфере */
+        /* look for the end of the headers in the current buffer */
         int found = -1, term = 0;
         for (int i = b->start; i + 3 < b->end; i++) {
             if (b->buf[i] == '\r' && b->buf[i + 1] == '\n' &&
@@ -1532,7 +1532,7 @@ static int wget_read_headers(wbuf_t *b, int *code, long *clen,
                     }
                     first = 0;
                 } else {
-                    /* копируем строку в NUL-terminated буфер и парсим её */
+                    /* copy the line into a NUL-terminated buffer and parse it */
                     char tmp[256];
                     int tl = len < (int)sizeof(tmp) - 1 ? len
                                                          : (int)sizeof(tmp) - 1;
@@ -1564,11 +1564,11 @@ static int wget_read_headers(wbuf_t *b, int *code, long *clen,
         }
         int rc = wbuf_append(b);
         if (rc < 0) return -1;
-        if (rc == 0) return -1;                  /* EOF до конца заголовков */
+        if (rc == 0) return -1;                  /* EOF before the end of the headers */
     }
 }
 
-/* Пропустить CRLF после чанка. */
+/* Skip the CRLF after a chunk. */
 static int wbuf_skip_crlf(wbuf_t *b) {
     unsigned char c;
     if (wbuf_get(b, &c) <= 0) return -1;
@@ -1617,7 +1617,7 @@ static int wget_save_body(wbuf_t *b, int outfd, int chunked, long clen,
         return 0;
     }
 
-    if (clen == 0) return 0;                     /* тело пустое */
+    if (clen == 0) return 0;                     /* body is empty */
     long total = clen;
     unsigned char tmp[1024];
     for (;;) {
@@ -1643,7 +1643,7 @@ static int wget_save_body(wbuf_t *b, int outfd, int chunked, long clen,
     return 0;
 }
 
-/* Подключиться и, если нужно, поднять TLS-сессию.  NULL при ошибке. */
+/* Connect and, if needed, bring up a TLS session.  NULL on error. */
 static tr_t *wget_open_conn(const char *host, int port, int use_tls) {
     uint32_t ip;
     if (parse_ipv4(host, &ip) != 0 && dns_resolve(host, &ip) != 0) return NULL;
@@ -1792,7 +1792,7 @@ int cact_ub_wget(char **argv, int argc) {
             return 1;
         }
 
-        /* открываем файл только при успешном ответе */
+        /* open the file only on a successful response */
         int outfd = STDOUT_FILENO;
         char defname[128];
         const char *name = outfile;
