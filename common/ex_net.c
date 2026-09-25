@@ -14,6 +14,7 @@
 #include <stddef.h>
 
 #include <socket.h>
+#include <tls.h>
 #include <nodeio.h>
 #include <ioctl_abi.h>
 #include <unistd.h>
@@ -106,7 +107,8 @@ static void fill_sin(struct sockaddr_in *a, uint32_t ip_h, uint16_t port_h) {
 /* ────────────────────────────────────────────────────────────────────────── */
 
 static const char nconn_usage[] =
-    "usage: nconn IP PORT [TEXT...]\n"
+    "usage: nconn HOST PORT [TEXT...]\n"
+    "       HOST — адрес или имя (DNS)\n"
     "       шлёт TEXT (или 'PING\\n' по умолчанию) и читает ответ\n";
 
 int cact_ub_nconn(char **argv, int argc) {
@@ -120,7 +122,11 @@ int cact_ub_nconn(char **argv, int argc) {
     }
     uint32_t ip;
     uint16_t port;
-    if (parse_ipv4(argv[1], &ip)   < 0) { we("nconn: bad ip\n");   return 1; }
+    if (parse_ipv4(argv[1], &ip) != 0) {
+        w("nconn: resolve "); w(argv[1]); w(" ... ");
+        if (dns_resolve(argv[1], &ip) != 0) { we("failed\n"); return 1; }
+        print_ipv4_h(ip); w("\n");
+    }
     if (parse_port(argv[2], &port) < 0) { we("nconn: bad port\n"); return 1; }
 
     int fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
@@ -193,45 +199,97 @@ int cact_ub_net(char **argv, int argc) {
     return cact_ub_nconn(argv, argc);
 }
 
-static const char ping_usage[] = "usage: ping IP [-c COUNT]\n";
+static const char ping_usage[] =
+    "usage: ping [-c COUNT] [-i SEC] [-W MS] HOST\n"
+    "       HOST — адрес или имя (DNS); -c 0 — до Ctrl-C\n"
+    "       -W MS — сколько ждать ответ (по умолчанию 2000)\n";
+
+/* Печатает значение в миллисекундах с тремя знаками после точки. */
+static void w_ms_from_us(uint32_t us) {
+    char b[4];
+    uint32_t frac = us % 1000u;
+    wn((int)(us / 1000u));
+    w(".");
+    b[0] = (char)('0' + (int)((frac / 100u) % 10u));
+    b[1] = (char)('0' + (int)((frac / 10u) % 10u));
+    b[2] = (char)('0' + (int)(frac % 10u));
+    b[3] = '\0';
+    w(b);
+}
 
 int cact_ub_ping(char **argv, int argc) {
-    if (argc >= 2 && strcmp(argv[1], "--help") == 0) {
-        w(ping_usage);
-        return 0;
+    const char *host = NULL;
+    int count = 4, interval_s = 1, timeout_ms = 2000;
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-c") == 0 && i + 1 < argc) {
+            count = atoi(argv[++i]);
+            if (count < 0) count = 0;
+        } else if (strcmp(argv[i], "-i") == 0 && i + 1 < argc) {
+            interval_s = atoi(argv[++i]);
+            if (interval_s < 0) interval_s = 0;
+        } else if (strcmp(argv[i], "-W") == 0 && i + 1 < argc) {
+            timeout_ms = atoi(argv[++i]);
+            if (timeout_ms <= 0) timeout_ms = 2000;
+        } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+            w(ping_usage);
+            return 0;
+        } else if (argv[i][0] == '-' && argv[i][1]) {
+            we("ping: unknown option "); we(argv[i]); we("\n");
+            we(ping_usage);
+            return 1;
+        } else if (!host) {
+            host = argv[i];
+        }
     }
-    if (argc < 2) {
+    if (!host) {
         we(ping_usage);
         return 1;
     }
 
     uint32_t ip_h;
-    if (parse_ipv4(argv[1], &ip_h) < 0) {
-        we("ping: bad ip\n");
-        return 1;
-    }
-
-    int count = 4;
-    for (int i = 2; i < argc - 1; i++) {
-        if (strcmp(argv[i], "-c") == 0) {
-            count = atoi(argv[i + 1]);
-            if (count <= 0) count = 1;
-        }
-    }
-
-    w("PING "); print_ipv4_h(ip_h); w(":\n");
-    uint16_t id = (uint16_t)getpid();
-    for (int i = 0; i < count; i++) {
-        cact_ping_arg_t pa = { .dst_ip = ip_h, .id = id, .seq = (uint32_t)(i + 1) };
-        int rc = nio_dev_cmd("/dev/net", CACT_NETCTL_PING, &pa);
-        if (rc < 0) {
-            we("ping: send failed\n");
+    if (parse_ipv4(host, &ip_h) != 0) {
+        w("ping: resolve "); w(host); w(" ... ");
+        if (dns_resolve(host, &ip_h) != 0) {
+            we("failed\n");
             return 1;
         }
-        w("ping: echo request sent seq="); wn(i + 1); w("\n");
+        print_ipv4_h(ip_h);
+        w("\n");
     }
-    w("ping: done (echo replies will appear from kernel ICMP logs)\n");
-    return 0;
+
+    w("PING "); w(host); w(" ("); print_ipv4_h(ip_h); w("): 56 data bytes\n");
+
+    uint16_t id = (uint16_t)getpid();
+    int sent = 0, recvd = 0;
+    for (int seq = 1; count == 0 || seq <= count; seq++) {
+        cact_ping_wait_arg_t a;
+        memset(&a, 0, sizeof(a));
+        a.dst_ip     = ip_h;
+        a.id         = id;
+        a.seq        = (uint32_t)seq;
+        a.timeout_ms = (uint32_t)timeout_ms;
+
+        int rtt_us = nio_dev_cmd("net", CACT_NETCTL_PING_WAIT, &a);
+        sent++;
+        if (rtt_us < 0) {
+            w("Request timeout for icmp_seq "); wn(seq); w("\n");
+        } else {
+            recvd++;
+            wn((int)a.bytes_out); w(" bytes from ");
+            print_ipv4_h(a.src_ip_out);
+            w(": icmp_seq="); wn(seq);
+            w(" time="); w_ms_from_us((uint32_t)rtt_us); w(" ms\n");
+        }
+        if (count == 0 || seq < count) sleep(interval_s > 0 ? interval_s : 1);
+    }
+
+    w("\n--- "); w(host); w(" ping statistics ---\n");
+    wn(sent); w(" packets transmitted, "); wn(recvd);
+    w(" received, ");
+    wn(sent ? (100 * (sent - recvd)) / sent : 0);
+    w("% packet loss\n");
+    return recvd > 0 ? 0 : 1;
 }
 
 /* ────────────────────────────────────────────────────────────────────────── */
@@ -476,7 +534,7 @@ int cact_ub_dhcp(char **argv, int argc) {
     cfg.netmask_host  = subnet ? subnet : 0xFFFFFF00u;
     cfg.gateway_host  = router;
     cfg.dns_host      = dns ? dns : g_dns_ip_h;
-    int rc = nio_dev_cmd("/dev/net", CACT_NETCTL_NETCFG, &cfg);
+    int rc = nio_dev_cmd("net", CACT_NETCTL_NETCFG, &cfg);
     if (rc < 0) {
         we("dhcp: failed to apply config in kernel\n");
         close(fd);
@@ -704,7 +762,7 @@ static void ip_fmt_ipv4(uint32_t v, char *buf, int cap) {
 }
 
 static int ip_get_cfg(cact_netcfg_get_t *g) {
-    int rc = nio_dev_cmd("/dev/net", CACT_NETCTL_NETCFG_GET, g);
+    int rc = nio_dev_cmd("net", CACT_NETCTL_NETCFG_GET, g);
     if (rc < 0) {
         we("ip: NETCFG_GET failed rc=");
         wne(rc);
@@ -715,7 +773,7 @@ static int ip_get_cfg(cact_netcfg_get_t *g) {
 }
 
 static int ip_set_cfg(const cact_netcfg_arg_t *a) {
-    int rc = nio_dev_cmd("/dev/net", CACT_NETCTL_NETCFG, (void *)a);
+    int rc = nio_dev_cmd("net", CACT_NETCTL_NETCFG, (void *)a);
     if (rc < 0) {
         we("ip: NETCFG failed rc=");
         wne(rc);
@@ -1173,25 +1231,30 @@ int cact_ub_nc(char **argv, int argc) {
 /* ────────────────────────────────────────────────────────────────────────── */
 /*  wget  — микро-HTTP-клиент: GET по TCP, тело ответа в файл.                */
 /*                                                                           */
-/*    wget [-o FILE] [http://]HOST[:PORT][/PATH]                             */
+/*    wget [-o FILE] http[s]://HOST[:PORT][/PATH]                            */
 /*                                                                           */
-/*  Умеет Content-Length, chunked и чтение до закрытия (HTTP/1.0), простые    */
-/*  redirect'ы (Location на http:// или абсолютный путь).  HTTPS не           */
-/*  поддерживается (в CactOS нет TLS-стека для пользователя).                */
+/*  умеет Content-Length, chunked и чтение до закрытия (HTTP/1.0), простые    */
+/*  redirect'ы (Location с абсолютным URL или путём).  HTTPS ведёт libc:      */
+/*  после connect() сессия TLS 1.3 поднимается cact_tls_connect(), ключи      */
+/*  остаются в процессе, цепочку сертификатов проверяет ядро по системному    */
+/*  бандлу CA (/etc/ca-certificates.crt, иначе /lib/ca-certificates.crt),     */
+/*  а обмен идёт через cact_tls_read()/cact_tls_write().                     */
 /* ────────────────────────────────────────────────────────────────────────── */
 
 #define W_UA "cact-wget/0.1"
 #define W_REDIR_MAX 5
 
 static int wget_parse_url(const char *s, char *host, size_t hostsz,
-                          int *port, char *path, size_t pathsz) {
+                          int *port, int *is_tls, char *path, size_t pathsz) {
     if (!s || !s[0]) return -1;
-    if (strncmp(s, "https://", 8) == 0) {
-        we("wget: https is not supported (no TLS)\n");
-        return -1;
-    }
+    int tls = 0;
     const char *p = s;
-    if (strncmp(p, "http://", 7) == 0) p += 7;
+    if (strncmp(p, "https://", 8) == 0) {
+        tls = 1;
+        p += 8;
+    } else if (strncmp(p, "http://", 7) == 0) {
+        p += 7;
+    }
 
     size_t hn = 0;
     while (*p && *p != ':' && *p != '/' && hn < hostsz - 1)
@@ -1199,7 +1262,8 @@ static int wget_parse_url(const char *s, char *host, size_t hostsz,
     host[hn] = '\0';
     if (hn == 0) return -1;
 
-    *port = 80;
+    *is_tls = tls;
+    *port = tls ? 443 : 80;
     if (*p == ':') {
         p++;
         int v = 0;
@@ -1237,10 +1301,55 @@ static void wget_default_name(const char *path, char *out, size_t outsz) {
     }
 }
 
-/* Слайс-буфер для ответа: прячем излишек тела за концом заголовков. */
+/* Транспорт: обычный сокет или TLS-сессия поверх него.  Ключи TLS живут
+   здесь, в процессе; ядро даёт только примитивы и проверку сертификата. */
 typedef struct {
     int fd;
-    unsigned char buf[2048];
+    cact_tls_t *tls;
+} tr_t;
+
+static int tr_read(tr_t *t, void *buf, int len) {
+    if (t->tls) {
+        long n = cact_tls_read(t->tls, buf, (size_t)len);
+        return n < 0 ? -1 : (int)n;
+    }
+    return recv(t->fd, buf, (size_t)len, 0);
+}
+
+static int tr_write_all(tr_t *t, const char *buf, int len) {
+    while (len > 0) {
+        long n = t->tls ? cact_tls_write(t->tls, buf, (size_t)len)
+                        : write(t->fd, buf, (size_t)len);
+        if (n < 0) return -1;
+        if (n == 0) {
+            struct pollfd p;
+            p.fd = t->fd; p.events = POLLOUT; p.revents = 0;
+            poll(&p, 1, -1);
+            continue;
+        }
+        buf += n;
+        len -= (int)n;
+    }
+    return 0;
+}
+
+static void tr_close(tr_t *t) {
+    if (!t) return;
+    if (t->tls) { cact_tls_close(t->tls); t->tls = NULL; }
+    if (t->fd >= 0) close(t->fd);
+    t->fd = -1;
+}
+
+/* Слайс-буфер для ответа: прячем излишек тела за концом заголовков.
+   Размер не фиксирован: у настоящих сайтов заголовки (CSP, cookies,
+   report-to) легко перерастают любой разумный стековый массив — github
+   отдаёт больше двух килобайт, — поэтому буфер живёт в куче. */
+#define W_BUF_SIZE (16 * 1024)
+
+typedef struct {
+    tr_t *tr;
+    unsigned char *buf;
+    int cap;
     int start;
     int end;
 } wbuf_t;
@@ -1248,7 +1357,7 @@ typedef struct {
 static int wbuf_fill(wbuf_t *b) {
     if (b->start < b->end) return 1;
     b->start = b->end = 0;
-    int n = recv(b->fd, b->buf, sizeof(b->buf), 0);
+    int n = tr_read(b->tr, b->buf, b->cap);
     if (n <= 0) return n;
     b->end = n;
     return 1;
@@ -1261,12 +1370,14 @@ static int wbuf_append(wbuf_t *b) {
         b->end -= b->start;
         b->start = 0;
     }
-    if (b->end >= (int)sizeof(b->buf)) return -1;   /* заголовок слишком длинный */
-    int n = recv(b->fd, b->buf + b->end, sizeof(b->buf) - (size_t)b->end, 0);
+    if (b->end >= b->cap) return -1;   /* заголовок слишком длинный */
+    int n = tr_read(b->tr, b->buf + b->end, b->cap - b->end);
     if (n <= 0) return n;
     b->end += n;
     return 1;
 }
+
+static void wbuf_free(wbuf_t *b) { free(b->buf); b->buf = 0; }
 
 /* Прочитать байт; 1 = ok, 0 = EOF, -1 = ошибка. */
 static int wbuf_get(wbuf_t *b, unsigned char *out) {
@@ -1288,6 +1399,41 @@ static int wbuf_line(wbuf_t *b, char *out, int cap) {
         if (c == '\n') return n;
         if (c != '\r' && n < cap - 1) out[n++] = (char)c;
     }
+}
+
+
+/* ── прогресс загрузки ─────────────────────────────────────────────────── */
+
+static void wget_size_str(unsigned long long n, char *out, int cap)
+{
+    if (n >= (1ULL << 20))      snprintf(out, (size_t)cap, "%.1f MiB", (double)n / (double)(1ULL << 20));
+    else if (n >= (1ULL << 10)) snprintf(out, (size_t)cap, "%.1f KiB", (double)n / (double)(1ULL << 10));
+    else                        snprintf(out, (size_t)cap, "%llu B", n);
+}
+
+/* Одна строка прогресса на stderr, перерисовывается через '\r'.  Когда размер
+   неизвестен (chunked или тело до закрытия), показываем только счётчик. */
+static void wget_progress(const char *label, unsigned long long done, long total)
+{
+    char line[128], ds[24], ts[28], bar[27];
+
+    wget_size_str(done, ds, (int)sizeof ds);
+    if (total > 0) {
+        unsigned long long t = (unsigned long long)total;
+        int pct = (int)(done * 100ULL / t);
+        if (pct > 100) pct = 100;
+        int fill = pct * 24 / 100;
+        for (int i = 0; i < 24; i++)
+            bar[i] = (i < fill) ? '#' : (i == fill ? '>' : '.');
+        bar[24] = '\0';
+        wget_size_str(t, ts, (int)sizeof ts);
+        snprintf(line, sizeof line, "\r%-18.18s [%s] %3d%%  %s / %s",
+                 label, bar, pct, ds, ts);
+    } else {
+        snprintf(line, sizeof line, "\r%-18.18s %s", label, ds);
+    }
+    we(line);
+    fflush(stderr);
 }
 
 /* Прочитать N байт тела. */
@@ -1317,12 +1463,12 @@ static int wget_write_all(int fd, const unsigned char *buf, int len) {
     return 0;
 }
 
-static int wget_send_request(int fd, const char *host, int port,
+static int wget_send_request(tr_t *tr, const char *host, int port, int tls,
                              const char *path) {
     char portstr[8];
     char req[1600];
     int n;
-    if (port != 80) {
+    if (port != (tls ? 443 : 80)) {
         itoa(port, portstr);
         n = snprintf(req, sizeof(req),
                      "GET %s HTTP/1.1\r\n"
@@ -1341,7 +1487,7 @@ static int wget_send_request(int fd, const char *host, int port,
                      path, host, W_UA);
     }
     if (n <= 0 || n >= (int)sizeof(req)) return -1;
-    if (nc_xfer_all(fd, req, n) != 0) return -1;
+    if (tr_write_all(tr, req, n) != 0) return -1;
     return 0;
 }
 
@@ -1439,7 +1585,7 @@ static int hexval(int c) {
 }
 
 static int wget_save_body(wbuf_t *b, int outfd, int chunked, long clen,
-                          unsigned long long *written) {
+                          unsigned long long *written, const char *label) {
     *written = 0;
     if (chunked) {
         for (;;) {
@@ -1461,13 +1607,17 @@ static int wget_save_body(wbuf_t *b, int outfd, int chunked, long clen,
                 if (wget_write_all(outfd, tmp, take) != 0) return -1;
                 *written += (unsigned long long)take;
                 sz -= take;
+                if (label && ((*written >> 14) != ((*written - (unsigned long long)take) >> 14)))
+                    wget_progress(label, *written, -1);
             }
             if (wbuf_skip_crlf(b) != 0) return -1;
         }
+        if (label) { wget_progress(label, *written, -1); we("\n"); }
         return 0;
     }
 
     if (clen == 0) return 0;                     /* тело пустое */
+    long total = clen;
     unsigned char tmp[1024];
     for (;;) {
         if (b->start == b->end) {
@@ -1481,26 +1631,52 @@ static int wget_save_body(wbuf_t *b, int outfd, int chunked, long clen,
         b->start += take;
         if (wget_write_all(outfd, tmp, take) != 0) return -1;
         *written += (unsigned long long)take;
+        if (label && ((*written >> 14) != ((*written - (unsigned long long)take) >> 14)))
+            wget_progress(label, *written, total);
         if (clen >= 0) {
             clen -= take;
             if (clen == 0) break;
         }
     }
+    if (label) { wget_progress(label, *written, total); we("\n"); }
     return 0;
 }
 
-static int wget_open_conn(const char *host, int port) {
+/* Подключиться и, если нужно, поднять TLS-сессию.  NULL при ошибке. */
+static tr_t *wget_open_conn(const char *host, int port, int use_tls) {
     uint32_t ip;
-    if (parse_ipv4(host, &ip) != 0 && dns_resolve(host, &ip) != 0) return -1;
+    if (parse_ipv4(host, &ip) != 0 && dns_resolve(host, &ip) != 0) return NULL;
     int fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (fd < 0) return -2;
+    if (fd < 0) return NULL;
     struct sockaddr_in dst;
     fill_sin(&dst, ip, (uint16_t)port);
     if (connect(fd, (struct sockaddr *)&dst, sizeof(dst)) < 0) {
         close(fd);
-        return -3;
+        return NULL;
     }
-    return fd;
+
+    tr_t *tr = (tr_t *)calloc(1, sizeof(*tr));
+    if (!tr) {
+        close(fd);
+        return NULL;
+    }
+    tr->fd = fd;
+    tr->tls = NULL;
+
+    if (use_tls) {
+        tr->tls = cact_tls_connect(fd, host);
+        if (!tr->tls) {
+            we("wget: TLS with ");
+            we(host);
+            we(" failed: ");
+            we(cact_tls_error());
+            we("\n");
+            tr_close(tr);
+            free(tr);
+            return NULL;
+        }
+    }
+    return tr;
 }
 
 int cact_ub_wget(char **argv, int argc) {
@@ -1514,8 +1690,8 @@ int cact_ub_wget(char **argv, int argc) {
         } else if (strcmp(argv[i], "-h") == 0 ||
                    strcmp(argv[i], "--help") == 0) {
             fprintf(stderr,
-                    "usage: wget [-o FILE] [http://]HOST[:PORT][/PATH]\n"
-                    "  micro HTTP/1.1 GET client (no TLS)\n"
+                    "usage: wget [-o FILE] http[s]://HOST[:PORT][/PATH]\n"
+                    "  micro HTTP/1.1 GET client (TLS 1.3, certificate verified)\n"
                     "  default output: basename of PATH (index.html for '/')\n");
             return 0;
         } else if (argv[i][0] == '-' && argv[i][1]) {
@@ -1528,54 +1704,70 @@ int cact_ub_wget(char **argv, int argc) {
         }
     }
     if (!url) {
-        we("usage: wget [-o FILE] [http://]HOST[:PORT][/PATH]\n");
+        we("usage: wget [-o FILE] http[s]://HOST[:PORT][/PATH]\n");
         return 1;
     }
 
     char host[160];
     char path[768];
     int  port = 80;
-    if (wget_parse_url(url, host, sizeof(host), &port, path, sizeof(path)) != 0) {
+    int  tls = 0;
+    if (wget_parse_url(url, host, sizeof(host), &port, &tls,
+                       path, sizeof(path)) != 0) {
         we("wget: bad URL\n");
         return 1;
     }
 
     for (int attempt = 0; attempt < W_REDIR_MAX; attempt++) {
-        int fd = wget_open_conn(host, port);
-        if (fd < 0) {
+        tr_t *tr = wget_open_conn(host, port, tls);
+        if (!tr) {
             we("wget: cannot connect to ");
             we(host);
             we("\n");
             return 1;
         }
-        if (wget_send_request(fd, host, port, path) != 0) {
+        if (wget_send_request(tr, host, port, tls, path) != 0) {
             we("wget: send failed\n");
-            close(fd);
+            tr_close(tr);
+            free(tr);
             return 1;
         }
 
         wbuf_t buf;
-        buf.fd = fd;
+        buf.tr = tr;
+        buf.buf = (unsigned char *)malloc(W_BUF_SIZE);
+        buf.cap = W_BUF_SIZE;
         buf.start = buf.end = 0;
+        if (!buf.buf) {
+            we("wget: out of memory\n");
+            tr_close(tr);
+            free(tr);
+            return 1;
+        }
 
         int code, chunked;
         long clen;
         char loc[1024];
         if (wget_read_headers(&buf, &code, &clen, &chunked, loc, sizeof(loc)) != 0) {
             we("wget: malformed response\n");
-            close(fd);
+            free(buf.buf);
+            tr_close(tr);
+            free(tr);
             return 1;
         }
 
         if (code == 301 || code == 302 || code == 303 ||
             code == 307 || code == 308) {
-            close(fd);
+            tr_close(tr);
+            free(tr);
+            wbuf_free(&buf);
             if (!loc[0]) {
                 we("wget: redirect without Location\n");
                 return 1;
             }
-            if (strncmp(loc, "http://", 7) == 0) {
-                if (wget_parse_url(loc, host, sizeof(host), &port,
+            if (strncmp(loc, "http://", 7) == 0 ||
+                strncmp(loc, "https://", 8) == 0) {
+                if (wget_parse_url(loc, host, sizeof(host), &port, &tls,
                                    path, sizeof(path)) != 0) {
                     we("wget: bad redirect Location\n");
                     return 1;
@@ -1584,7 +1776,7 @@ int cact_ub_wget(char **argv, int argc) {
                 strncpy(path, loc, sizeof(path) - 1);
                 path[sizeof(path) - 1] = '\0';
             } else {
-                we("wget: unsupported redirect (relative or https)\n");
+                we("wget: unsupported redirect (relative URL)\n");
                 return 1;
             }
             fprintf(stderr, "wget: %d redirect -> %s\n", code, loc);
@@ -1593,7 +1785,9 @@ int cact_ub_wget(char **argv, int argc) {
 
         if (code < 200 || code >= 300) {
             fprintf(stderr, "wget: HTTP %d\n", code);
-            close(fd);
+            wbuf_free(&buf);
+            tr_close(tr);
+            free(tr);
             return 1;
         }
 
@@ -1612,16 +1806,21 @@ int cact_ub_wget(char **argv, int argc) {
                 we("wget: cannot create ");
                 we(name);
                 we("\n");
-                close(fd);
+                wbuf_free(&buf);
+                tr_close(tr);
+                free(tr);
                 return 1;
             }
             opened = 1;
         }
 
         unsigned long long written = 0;
-        int rc = wget_save_body(&buf, outfd, chunked, clen, &written);
+        const char *label = (outfd == STDOUT_FILENO) ? NULL : name;
+        int rc = wget_save_body(&buf, outfd, chunked, clen, &written, label);
         if (opened) close(outfd);
-        close(fd);
+        wbuf_free(&buf);
+        tr_close(tr);
+        free(tr);
 
         if (rc != 0) {
             we("wget: body read failed\n");
