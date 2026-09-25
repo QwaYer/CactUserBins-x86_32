@@ -74,11 +74,17 @@ c_args = [
 
 # The Makefile's APPS list.
 apps = [
-  'pwd', 'ls', 'mkdir', 'rmdir', 'tch', 'rm', 'cat', 'wrt', 'stat', 'mv', 'ln',
+  'pwd', 'ls', 'mkdir', 'rmdir', 'rm', 'cat', 'wrt', 'stat', 'mv', 'ln',
   'readlink', 'ldd', 'clear', 'date', 'uptime', 'kill', 'su', 'sleep', 'free', 'sysinfo',
   'modload', 'modunload', 'run', 'echo', 'true', 'false', 'whoami', 'id',
   'chmod', 'chown', 'version', 'ip', 'ping', 'wget', 'dd', 'df', 'grep', 'fdisk', 'mkfs.ext4',
   'mkfs.fat32', 'cact-rootfs', 'poweroff', 'reboot', 'halt', 'suspend',
+  'head', 'tail', 'wc', 'sort', 'uniq', 'cut', 'tr', 'tee', 'seq', 'yes', 'printf',
+  'cp', 'touch',
+  'basename', 'dirname', 'realpath', 'which', 'mktemp', 'tty',
+  'uname', 'hostname', 'nproc', 'sync', 'env', 'printenv', 'du', 'find',
+  'ps', 'lsmod', 'lspci', 'lsusb', 'dmesg', 'sha256sum', 'sha384sum', 'mount', 'umount',
+  'md5sum', 'sha1sum',
 ]
 
 # The Makefile's SBIN_APPS list.
@@ -86,6 +92,7 @@ sbin_apps = [
   'kill', 'su', 'modload', 'modunload', 'ping', 'ip', 'dd', 'df',
   'fdisk', 'mkfs.ext4', 'mkfs.fat32', 'cact-rootfs',
   'poweroff', 'reboot', 'halt', 'suspend',
+  'mount', 'umount',
 ]
 
 # The Makefile's dedicated link lines: no common/ objects, one extra object.
@@ -97,16 +104,23 @@ disk_tools = {
 
 common_lib = static_library('common',
   files(
+    'common/ex_copy.c',
     'common/ex_dd.c',
     'common/ex_df.c',
     'common/ex_echo.c',
     'common/ex_files.c',
     'common/ex_grep.c',
+    'common/ex_hash.c',
     'common/ex_ldd.c',
     'common/ex_misc.c',
     'common/ex_nav.c',
     'common/ex_net.c',
+    'common/ex_path.c',
+    'common/ex_proc.c',
     'common/ex_sys.c',
+    'common/ex_system.c',
+    'common/ex_text.c',
+    'common/ex_util.c',
   ),
   # ex_sys.c reads the current KMS mode for sysinfo, so the shared objects
   # compile against the DRM uapi headers.
@@ -166,19 +180,26 @@ run_target('stage',
 # ------------------------------------------------------------------------------
 
 host_c_args = ['-m32', '-O2', '-Wall', '-Wno-unused-function', '-Wno-unused-variable']
+# The objects are 32-bit (-m32 in host_c_args), so the link step needs -m32 too
+# or the native 64-bit linker rejects them.
+host_link_args = ['-m32']
 
 executable('host-fdisk',
   files('fdisk/main.c', 'fdisk/ptab.c'),
-  native: true, c_args: host_c_args, build_by_default: false)
+  native: true, c_args: host_c_args, link_args: host_link_args,
+  build_by_default: false)
 
 executable('host-mkfs.ext4',
   files('mkfs.ext4/main.c', 'mkfs.ext4/ext4_fmt.c'),
-  native: true, c_args: host_c_args, build_by_default: false)
+  native: true, c_args: host_c_args, link_args: host_link_args,
+  build_by_default: false)
 
 executable('host-mkfs.fat32',
   files('mkfs.fat32/main.c', 'mkfs.fat32/fat32_fmt.c'),
-  native: true, c_args: host_c_args, build_by_default: false)
+  native: true, c_args: host_c_args, link_args: host_link_args,
+  build_by_default: false)
 
 executable('host-cact-rootfs',
   files('cact-rootfs/main.c'),
-  native: true, c_args: host_c_args, build_by_default: false)
+  native: true, c_args: host_c_args, link_args: host_link_args,
+  build_by_default: false)

@@ -184,7 +184,9 @@ int cact_ub_su(char **argv, int argc) {
     return 0;
 }
 
-static const char sleep_usage[] = "usage: sleep SECONDS\n";
+static const char sleep_usage[] =
+    "usage: sleep NUMBER...\n"
+    "Pause for the total of the given durations (fractions allowed).\n";
 
 int cact_ub_sleep(char **argv, int argc) {
     if (argc >= 2 && strcmp(argv[1], "--help") == 0) {
@@ -192,11 +194,34 @@ int cact_ub_sleep(char **argv, int argc) {
         return 0;
     }
     if (argc < 2) { write(STDERR_FILENO, sleep_usage, sizeof(sleep_usage) - 1); return 1; }
-    sleep((unsigned int)atoi(argv[1]));
+
+    double total = 0.0;
+    for (int i = 1; i < argc; i++) {
+        char *end = NULL;
+        double v = strtod(argv[i], &end);
+        if (end == argv[i] || (end && *end != '\0') || v < 0.0) {
+            fprintf(stderr, "sleep: invalid time interval '%s'\n", argv[i]);
+            return 1;
+        }
+        total += v;
+    }
+    while (total > 0.0) {
+        if (total > 3600.0) {
+            sleep(3600);
+            total -= 3600.0;
+        } else {
+            usleep((unsigned int)(total * 1000000.0 + 0.5));
+            total = 0.0;
+        }
+    }
     return 0;
 }
 
-static const char free_usage[] = "usage: free\n";
+static int proc_field(const char *buf, const char *key, char *out, int cap);
+
+static const char free_usage[] =
+    "usage: free\n"
+    "Show memory use from /proc/meminfo (kB values, printed in MiB).\n";
 
 int cact_ub_free(char **argv, int argc) {
     if (argc >= 2 && strcmp(argv[1], "--help") == 0) {
@@ -204,12 +229,29 @@ int cact_ub_free(char **argv, int argc) {
         return 0;
     }
     (void)argv; (void)argc;
-    void *brk = sbrk(0);
-    char buf[32];
-    write(STDOUT_FILENO, "heap brk: 0x", 12);
-    hex_to_ascii((unsigned int)(size_t)brk, buf);
-    write(STDOUT_FILENO, buf, strlen(buf));
-    write(STDOUT_FILENO, "\n", 1);
+
+    static char mem[512];
+    int got = nio_read_file("/proc/meminfo", mem, sizeof(mem) - 1);
+    if (got <= 0) {
+        void *brk = sbrk(0);
+        printf("heap brk: 0x%08x\n", (unsigned)(size_t)brk);
+        return 0;
+    }
+    mem[got] = '\0';
+
+    char tot[24] = "0", fre[24] = "0", use[24] = "0", swap[24] = "0";
+    proc_field(mem, "MemTotal", tot, sizeof(tot));
+    proc_field(mem, "MemFree", fre, sizeof(fre));
+    proc_field(mem, "MemUsed", use, sizeof(use));
+    proc_field(mem, "SwapTotal", swap, sizeof(swap));
+
+    long long t = atoll(tot), f = atoll(fre), u = atoll(use);
+    if (u == 0 && t > 0) u = t - f;
+
+    printf("Mem:  %lld MiB total, %lld MiB used, %lld MiB free\n",
+           t / 1024, u / 1024, f / 1024);
+    long long s = atoll(swap);
+    if (s > 0) printf("Swap: %lld MiB total\n", s / 1024);
     return 0;
 }
 

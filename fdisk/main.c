@@ -179,6 +179,21 @@ static int path_is_dir(const char *path) {
     return S_ISDIR(st.st_mode) ? 1 : 0;
 }
 
+/* Sector capacity as reported by stat().  Block nodes carry their byte size
+ * (the devfs fills it in), and regular images have one, so this avoids the
+ * slow read-probing path — and the I/O errors it can provoke — whenever the
+ * size is already known.  Returns 0 when there is nothing to go on. */
+static uint64_t stat_sectors(const char *path) {
+    struct stat st;
+    if (stat(path, &st) != 0)
+        return 0;
+    if (!S_ISBLK(st.st_mode) && !S_ISREG(st.st_mode))
+        return 0;
+    if (st.st_size <= 0)
+        return 0;
+    return (uint64_t)st.st_size / 512;
+}
+
 /* Resolve the argument to an open fd. Returns sector capacity or 0. */
 static uint64_t open_device(const char *arg) {
     char data_path[256];
@@ -188,15 +203,27 @@ static uint64_t open_device(const char *arg) {
 
     if (arg[0] && strlen(arg) + 6 < sizeof(data_path)) {
         snprintf(data_path, sizeof(data_path), "%s/data", arg);
-        if (path_is_dir(arg) && try_stat(data_path)) {
+        if (path_is_dir(arg)) {
+            if (!try_stat(data_path)) {
+                printf("fdisk: %s is a directory without a 'data' block node\n",
+                       arg);
+                return 0;
+            }
             g_block = 1;
             const char *slash = strrchr(arg, '/');
             const char *base  = slash ? slash + 1 : arg;
             strncpy(g_devname, base, sizeof(g_devname) - 1);
             g_devname[sizeof(g_devname) - 1] = '\0';
             g_fd = open(data_path, O_RDWR);
-            if (g_fd < 0) { printf("fdisk: cannot open %s\n", data_path); return 0; }
-            return probe_capacity();
+            if (g_fd < 0) {
+                printf("fdisk: cannot open %s\n", data_path);
+                return 0;
+            }
+            uint64_t cap = stat_sectors(data_path);
+            if (!cap) cap = probe_capacity();
+            if (!cap)
+                printf("fdisk: cannot determine the size of %s\n", data_path);
+            return cap;
         }
     }
 
@@ -208,7 +235,7 @@ static uint64_t open_device(const char *arg) {
         if (st.st_size <= 0) { printf("fdisk: image is empty\n"); close(g_fd); return 0; }
         return (uint64_t)(st.st_size / 512);
     }
-    /* raw node passed directly (e.g. /dev/sda/data) */
+    /* raw node passed directly (e.g. /dev/sda or /dev/sda/data) */
     if (arg[0] && strstr(arg, "/dev/")) {
         const char *slash = strrchr(arg, '/');
         const char *base  = slash ? slash + 1 : arg;
@@ -221,7 +248,12 @@ static uint64_t open_device(const char *arg) {
         g_devname[name_len] = '\0';
         g_block = 1;
     }
-    return probe_capacity();
+    uint64_t cap = stat_sectors(arg);
+    if (!cap) cap = probe_capacity();
+    if (!cap)
+        printf("fdisk: cannot determine the size of %s (not a block device?)\n",
+               arg);
+    return cap;
 }
 
 static void rescan_kernel(void) {
@@ -361,14 +393,93 @@ static void print_types(void) {
 
 /* ---- interactive -------------------------------------------------------------- */
 
-static int read_line(char *buf, int size) {
+/* Repaint an edited line.
+ *
+ * This console has no '\b' and no erase-to-end-of-line, so the usual
+ * "\b \b" trick only prints a space *after* the character.  Instead do what
+ * the shell does: return the carriage, rewrite the prompt and the text, and
+ * overwrite the now-unused tail with spaces. */
+static void redraw_line(const char *prompt, const char *buf, int len,
+                        int prev_len) {
+    int max = len > prev_len ? len : prev_len;
+    fputs("\r", stdout);
+    if (prompt)
+        fputs(prompt, stdout);
+    if (len > 0)
+        fwrite(buf, 1, (size_t)len, stdout);
+    for (int i = len; i < max + 1; i++)
+        fputc(' ', stdout);
+    fputs("\r", stdout);
+    if (prompt)
+        fputs(prompt, stdout);
+    if (len > 0)
+        fwrite(buf, 1, (size_t)len, stdout);
+    fflush(stdout);
+}
+
+/* Read one line from the console, with a prompt, echo and backspace editing.
+ *
+ * The console has no line discipline, so this code has to provide all of it:
+ * bytes arrive raw and nothing is echoed.  Both '\r' and '\n' end the line (a
+ * serial terminal may send either), '\b'/0x7f delete the previous character
+ * and other control bytes are dropped instead of ending up inside a command
+ * word.  Returns the character count, or -1 on end of input. */
+static int read_line(const char *prompt, char *buf, int size) {
+    /* A line that ended with CR may be followed by LF (CRLF terminal).  The
+     * stray LF is dropped here so it cannot be mistaken for an empty answer
+     * to the *next* question. */
+    static int pending_lf;
     int n = 0;
-    while (n < size - 1) {
+    int shown = 0;                 /* characters currently on screen */
+
+    if (prompt) {
+        fputs(prompt, stdout);
+        fflush(stdout);
+    }
+    if (size <= 0)
+        return -1;
+    for (;;) {
         char c;
         ssize_t r = read(0, &c, 1);
-        if (r <= 0) break;
-        if (c == '\n') break;
-        buf[n++] = c;
+        if (r <= 0) {
+            if (n == 0) {
+                if (prompt) {
+                    fputc('\n', stdout);
+                    fflush(stdout);
+                }
+                return -1;
+            }
+            break;
+        }
+        if (n == 0 && pending_lf) {
+            pending_lf = 0;
+            if (c == '\n')
+                continue;              /* LF half of CRLF: ignore it */
+            /* anything else is a real first character: use it as such */
+        }
+        if (c == '\n' || c == '\r') {
+            if (c == '\r')
+                pending_lf = 1;
+            fputc('\n', stdout);
+            fflush(stdout);
+            break;
+        }
+        if (c == '\b' || c == 0x7f) {
+            if (n > 0) {
+                n--;
+                redraw_line(prompt, buf, n, shown);
+                shown = n;
+            }
+            continue;
+        }
+        if ((unsigned char)c < 0x20)
+            continue;              /* drop stray control bytes */
+        if (n < size - 1) {
+            buf[n++] = c;
+            fputc(c, stdout);
+            fflush(stdout);
+            shown = n;
+        }
     }
     buf[n] = '\0';
     return n;
@@ -521,12 +632,23 @@ static int run_verb(ptab_t *t, const char *verb,
 
 static int interactive(ptab_t *t) {
     printf("fdisk: interactive mode, 'h' for help, 'q' to quit\n");
+
+    /* show the state we are about to edit, like the classic fdisk does */
+    print_table(t);
+    printf("\n");
+
     for (;;) {
         char line[128], *args[4];
-        printf("Command (m for help): ");
-        fflush(stdout);
-        if (read_line(line, sizeof(line)) <= 0)
+        char first_buf[32], end_buf[32];
+
+        int r = read_line("Command (m for help): ", line, sizeof(line));
+        if (r < 0) {
+            if (g_dirty)
+                printf("Warning: unsaved changes were discarded.\n");
             return g_dirty ? 1 : 0;
+        }
+        if (r == 0)
+            continue;
 
         int nargs = 0;
         char *save = NULL;
@@ -535,14 +657,50 @@ static int interactive(ptab_t *t) {
             args[nargs++] = tok;
         if (nargs == 0) continue;
 
-        int r = run_verb(t, args[0], nargs > 1 ? args[1] : NULL,
-                         nargs > 2 ? args[2] : NULL);
-        if (r == -2) {
+        const char *a1 = nargs > 1 ? args[1] : NULL;
+        const char *a2 = nargs > 2 ? args[2] : NULL;
+
+        /* `n` on its own: ask for the geometry instead of just failing */
+        if (!strcmp(args[0], "n") || !strcmp(args[0], "new")) {
+            if (!a1) {
+                if (read_line("First sector [default]: ", first_buf,
+                              sizeof(first_buf)) < 0)
+                    return g_dirty ? 1 : 0;
+                a1 = first_buf[0] ? first_buf : "default";
+            }
+            if (!a2) {
+                if (read_line("Last sector or +size (e.g. +512M): ", end_buf,
+                              sizeof(end_buf)) < 0)
+                    return g_dirty ? 1 : 0;
+                if (!end_buf[0]) {
+                    printf("(no end sector given: partition not created)\n");
+                    continue;
+                }
+                a2 = end_buf;
+            }
+        }
+
+        int rv = run_verb(t, args[0], a1, a2);
+        if (rv == -2) {
             if (g_dirty) printf("Warning: unsaved changes.  Use 'w' to write.\n");
             return g_dirty ? 1 : 0;
         }
-        if (r < 0 && r != -2)
+        if (rv < 0) {
             printf("(failed)\n");
+            continue;
+        }
+
+        /* show the result of an edit straight away */
+        if (!strcmp(args[0], "n") || !strcmp(args[0], "new") ||
+            !strcmp(args[0], "d") || !strcmp(args[0], "del") ||
+            !strcmp(args[0], "t") || !strcmp(args[0], "type") ||
+            !strcmp(args[0], "b") || !strcmp(args[0], "boot") ||
+            !strcmp(args[0], "o") || !strcmp(args[0], "label-mbr") ||
+            !strcmp(args[0], "g") || !strcmp(args[0], "label-gpt")) {
+            printf("\n");
+            print_table(t);
+            printf("\n");
+        }
     }
 }
 
@@ -557,18 +715,35 @@ static int is_verb(const char *s) {
     return 0;
 }
 
-/* One-shot: run every verb from argv[2..] in order. */
+/* Run one scripted verb.  Returns 1 on success, 0 for 'q' (stop, not an
+ * error) and -1 for a failure that must abort the rest of the script. */
+static int run_one(ptab_t *t, const char *verb,
+                   const char *a1, const char *a2) {
+    int r = run_verb(t, verb, a1, a2);
+    if (r == -2)
+        return 0;
+    if (r < 0) {
+        printf("fdisk: '%s' failed — stopping, the rest of the script was "
+               "not run\n", verb);
+        return -1;
+    }
+    return 1;
+}
+
+/* One-shot: run every verb from argv[2..] in order.
+ *
+ * The first failing verb aborts the remaining ones.  A scripted run must
+ * never reach 'w' after an earlier step failed: that would commit a
+ * half-built table over whatever was on the disk before. */
 static int run_argv(ptab_t *t, int argc, char **argv) {
     const char *cur = NULL;
     const char *a1 = NULL, *a2 = NULL;
-    int rc = 0;
 
     for (int i = 2; i < argc; i++) {
         if (is_verb(argv[i])) {
             if (cur) {
-                int r = run_verb(t, cur, a1, a2);
-                if (r == -2) return rc;
-                if (r < 0) rc = r;
+                int r = run_one(t, cur, a1, a2);
+                if (r <= 0) return r < 0 ? -1 : 0;
                 a1 = a2 = NULL;
             }
             cur = argv[i];
@@ -580,11 +755,10 @@ static int run_argv(ptab_t *t, int argc, char **argv) {
         else { printf("fdisk: too many arguments for '%s'\n", cur); return -1; }
     }
     if (cur) {
-        int r = run_verb(t, cur, a1, a2);
-        if (r == -2) return rc;
-        if (r < 0) rc = r;
+        int r = run_one(t, cur, a1, a2);
+        if (r <= 0) return r < 0 ? -1 : 0;
     }
-    return rc;
+    return 0;
 }
 
 int main(int argc, char **argv) {

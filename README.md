@@ -5,7 +5,7 @@
   <img src="https://img.shields.io/badge/language-C-orange.svg?style=for-the-badge" alt="Language: C">
   <img src="https://img.shields.io/badge/link-PIE%20%2B%20clibc.so-purple.svg?style=for-the-badge" alt="PIE + clibc.so">
   <img src="https://img.shields.io/badge/layout-one%20ELF%20per%20tool-blue.svg?style=for-the-badge" alt="One ELF per tool">
-  <img src="https://img.shields.io/badge/tools-46-green.svg?style=for-the-badge" alt="46 tools">
+  <img src="https://img.shields.io/badge/tools-83-green.svg?style=for-the-badge" alt="83 tools">
   <img src="https://img.shields.io/badge/install-LocalRepoCactOS-0369a1.svg?style=for-the-badge" alt="install → LocalRepoCactOS">
 </p>
 
@@ -20,7 +20,7 @@
 
 | | |
 |---|---|
-| **Utilities** | **46** standalone programs (see [`meson.build`](meson.build) `apps`) |
+| **Utilities** | **83** standalone programs (see [`meson.build`](meson.build) `apps`) |
 | **`/bin` vs `/sbin`** | **`lr_bin`** / **`lr_sbin`** options used by the **`stage`** target (staging dirs under **LocalRepo**) |
 | **Shared objects** | **`common/ex_*.c`** compiled once; each link pulls **`start.o`** + **one** `*/main.o` + all **`common/*.o`** with **`--gc-sections`** so unused entrypoints are dropped |
 | **Load address** | PIE **ET_DYN** at **`0x08000000`** ([`link.ld`](link.ld)) — same family as **cactsole** / **cgoct** |
@@ -67,7 +67,7 @@ CactUserBins-x86_32/
 ├── meson.build           # apps list, bin/sbin split, stage target
 ├── link.ld               # PIE @ 0x08000000
 ├── common/
-│   ├── ex_files.c        # ls, mkdir, rmdir, tch, rm, cat, wrt, stat, mv, ln, readlink
+│   ├── ex_files.c        # ls, mkdir, rmdir, rm, cat, wrt, stat, mv, ln, readlink
 │   ├── ex_misc.c         # true, false, whoami, id, chmod, chown, version
 │   ├── ex_net.c          # ping, ip, wget (+ shared socket/DNS helpers)
 │   ├── ex_dd.c           # dd
@@ -75,8 +75,14 @@ CactUserBins-x86_32/
 │   ├── ex_grep.c         # grep
 │   ├── ex_ldd.c          # ldd (ELF32 DT_NEEDED reader, GNU-compatible flags)
 │   ├── ex_sys.c          # clear, date, uptime, kill, su, sleep, free, sysinfo, run, modload, modunload
-│   ├── ex_echo.c         # echo
-│   └── ex_nav.c          # pwd (cd stays a cactsole builtin)
+│   ├── ex_echo.c         # echo (with -n / -e)
+│   ├── ex_nav.c          # pwd (cd stays a cactsole builtin)
+│   ├── ex_copy.c         # cp, touch
+│   ├── ex_path.c         # basename, dirname, realpath, which, mktemp, tty
+│   ├── ex_system.c       # uname, hostname, nproc, sync, env, printenv, du, find
+│   ├── ex_text.c         # head, tail, wc, sort, uniq, cut, tr, tee, seq, yes, printf
+│   ├── ex_proc.c         # ps, mount, umount, lsmod, lspci, dmesg, sha256sum, sha384sum
+│   ├── ex_util.c/.h      # shared helpers (read_all, dir_foreach, mkdir -p, copy_file, ...)
 ├── build-meson/          # generated ELFs (gitignored)
 ├── cat/ ls/ …/           # one directory per utility; each holds main.c → main.o
 ├── fdisk/                # parted-analog: ptab.c (pure) + main.c
@@ -89,7 +95,7 @@ CactUserBins-x86_32/
 ```
 
 **`apps`** (authoritative list in [`meson.build`](meson.build)):  
-`pwd` `ls` `mkdir` `rmdir` `tch` `rm` `cat` `wrt` `stat` `mv` `ln` `readlink` `ldd` `clear` `date` `uptime` `kill` `su` `sleep` `free` `sysinfo` `modload` `modunload` `run` `echo` `true` `false` `whoami` `id` `chmod` `chown` `version` `ip` `ping` `wget` `dd` `df` `grep` `fdisk` `mkfs.ext4` `mkfs.fat32` `cact-rootfs` `poweroff` `reboot` `halt` `suspend`
+`pwd` `ls` `mkdir` `rmdir` `rm` `cat` `wrt` `stat` `mv` `ln` `readlink` `ldd` `clear` `date` `uptime` `kill` `su` `sleep` `free` `sysinfo` `modload` `modunload` `run` `echo` `true` `false` `whoami` `id` `chmod` `chown` `version` `ip` `ping` `wget` `dd` `df` `grep` `fdisk` `mkfs.ext4` `mkfs.fat32` `cact-rootfs` `poweroff` `reboot` `halt` `suspend` `head` `tail` `wc` `sort` `uniq` `cut` `tr` `tee` `seq` `yes` `printf` `cp` `touch` `basename` `dirname` `realpath` `which` `mktemp` `tty` `uname` `hostname` `nproc` `sync` `env` `printenv` `du` `find` `ps` `lsmod` `lspci` `lsusb` `dmesg` `sha256sum` `sha384sum` `md5sum` `sha1sum` `mount` `umount`
 
 ---
 
@@ -138,9 +144,51 @@ FAT32 with `fsck.fat`/mtools, and the rootfs skeleton by deploying a tree.
 | **`wget`** | Micro HTTP/1.1 GET client: `wget [-o FILE] http[s]://HOST[:PORT][/PATH]`. Resolves host names and speaks HTTPS through the libc **TLS 1.3** client (certificate chain verified against the system CA bundle); handles `Content-Length`, chunked bodies, close-delimited responses and `Location` redirects; the body lands in a file (default: basename of the path). Used by **cactpkg** to fetch manifests. |
 | **`dd`** | Block copier (`if=`/`of=`, `bs=`, `count=`, `skip=`, `seek=`, `conv=notrunc`, `status=none`). `dd if=/dev/zero of=/dev/sda1 bs=1M count=64` exercises the AHCI driver or fills a disk; works against the vfsdev byte-range block nodes. |
 | **`df`** | Free-space reporter for mounted ext4. Mount list is read from `/proc/mounts` (fallback: `/etc/mounts`, `/etc/mnts`); total/free come from the on-disk ext4 superblock of the partition node (same path `mkfs.ext4` uses). `df /dev/sda1` queries one device directly. |
-| **`grep`** | Line-oriented text search: `grep [-i] [-n] [-v] [-c] [-l] [-r] PATTERN [FILE...]` (plain substring, no regexes), files or stdin, recursive mode via `getdents`. Exit 0 = match, 1 = none, 2 = error. |
+| **`grep`** | Line-oriented text search: `grep [-i] [-n] [-v] [-c] [-l] [-q] [-w] [-r] [-F] PATTERN [FILE...]` (plain substring, no regexes), files or stdin, recursive mode via `getdents`. Exit 0 = match, 1 = none, 2 = error. |
 
 `wget`/`grep` install into `/bin`; `ping`/`ip`/`dd`/`df` into `/sbin` next to the disk/fs and power tools.
+
+---
+
+## 🧰 Core utilities, path / process / system tools
+
+A broad set of Linux-style userspace tools built on the kernel interfaces.
+Several of them are backed by kernel additions made alongside this suite:
+`/proc/mounts`, `/proc/modules`, `/proc/usb`, `/proc/<pid>/comm`, and the
+`CACT_SYSCTL_SETHOSTNAME` ioctl.
+
+### Text
+`head`/`tail` (`-n`, `-c`; `tail -f` follows a growing file via size polling),
+`wc` (`-c -l -w -m`), `sort` (`-n -r -u -f`), `uniq` (`-c -d -u`),
+`cut` (`-d -f -c -s`), `tr` (`-d -s`, ranges, escapes), `tee` (`-a`), `seq`,
+`yes`, `printf` (`%s %c %d %u %o %x %f`, `\n`/`\t`/`\xHH`).
+
+### Files and paths
+`cp` (`-r -f -v`), `touch` (`-c`), `basename`, `dirname`, `realpath`, `which`
+(`-a`), `mktemp` (`-d`), `tty`, `du` (`-a -s -h`), `find` (`-name`, `-type`,
+`-maxdepth`).
+
+### System / process / devices
+`uname` (`-a -s -n -r -m`), `hostname` (print, or set a new name), `nproc`,
+`sync`, `env`, `printenv`, `free` (`/proc/meminfo`), `ps` (with a `COMMAND`
+column from `/proc/<pid>/comm`), `lsmod` (`/proc/modules`), `lspci`
+(`/dev/modinfo`), `lsusb` (`/proc/usb`), `dmesg` (`-r`, `-n N`), `mount`,
+`umount` (`/sbin`; listing via `/proc/mounts`).
+
+### Hashes
+`sha256sum`, `sha384sum` (kernel `/dev/crypto`, one-shot, 1 MiB per call),
+`md5sum`, `sha1sum` (portable C, streamed — no size limit).
+
+### Existing tools, extended
+`ls -l/-a/-h`, `mkdir -p`, `rm -r/-f`, `cat -n`, `mv` (several sources, with a
+copy+unlink fallback across filesystems), `ln -f`, `stat` (octal mode +
+`rwx` string), `echo -n/-e`, `grep -q/-w/-F`, `sleep` (fractions, several
+arguments), `id -u/-g/-G/-n`, `chmod -R`, `chown -R`.
+
+### Remaining limit
+| Tool | Limit |
+|------|-------|
+| **`sha256sum`/`sha384sum`** | `/dev/crypto` hashes are one-shot with a 1 MiB per-call cap, so larger files are rejected (MD5/SHA-1 have no such limit) |
 
 ---
 

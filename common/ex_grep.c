@@ -26,6 +26,8 @@ typedef struct {
     int count;
     int list_only;
     int recurse;
+    int quiet;
+    int word;
     const char *pat;
     int patlen;
 } grep_opt_t;
@@ -41,17 +43,27 @@ static int g_low(int c) {
     return c;
 }
 
+static int g_isword(unsigned char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+           (c >= '0' && c <= '9') || c == '_';
+}
+
 static int g_match(const unsigned char *h, int hl,
-                   const unsigned char *n, int nl, int icase) {
+                   const unsigned char *n, int nl, int icase, int word) {
     if (nl == 0) return 1;
-    if (!icase) return memmem(h, (size_t)hl, n, (size_t)nl) != NULL;
     if (nl > hl) return 0;
     for (int i = 0; i <= hl - nl; i++) {
         int ok = 1;
         for (int j = 0; j < nl; j++) {
-            if (g_low(h[i + j]) != g_low(n[j])) { ok = 0; break; }
+            unsigned char hc = h[i + j];
+            if (icase ? (g_low(hc) != g_low(n[j])) : (hc != n[j])) { ok = 0; break; }
         }
-        if (ok) return 1;
+        if (!ok) continue;
+        if (word) {
+            if (i > 0 && g_isword(h[i - 1])) continue;
+            if (i + nl < hl && g_isword(h[i + nl])) continue;
+        }
+        return 1;
     }
     return 0;
 }
@@ -116,12 +128,14 @@ static int g_run_fd(int fd, const grep_opt_t *o, const char *path,
                 ln++;
                 int m = g_match(L.b, L.len,
                                 (const unsigned char *)o->pat, o->patlen,
-                                o->icase);
+                                o->icase, o->word);
                 if (o->invert) m = !m;
                 if (m) {
                     cnt++;
                     any = 1;
-                    if (o->count || o->list_only) {
+                    if (o->quiet) {
+                        stop = 1;
+                    } else if (o->count || o->list_only) {
                         /* counted/list — print at the end/right away */
                         if (o->list_only && !stop) {
                             if (path && path[0]) {
@@ -159,12 +173,15 @@ static int g_run_fd(int fd, const grep_opt_t *o, const char *path,
         /* last line without a line feed */
         ln++;
         int m = g_match(L.b, L.len,
-                        (const unsigned char *)o->pat, o->patlen, o->icase);
+                        (const unsigned char *)o->pat, o->patlen,
+                        o->icase, o->word);
         if (o->invert) m = !m;
         if (m) {
             cnt++;
             any = 1;
-            if (o->count || o->list_only) {
+            if (o->quiet) {
+                /* nothing to print */
+            } else if (o->count || o->list_only) {
                 if (o->list_only && path && path[0]) {
                     g_write_str(STDOUT_FILENO, path);
                     write(STDOUT_FILENO, "\n", 1);
@@ -265,10 +282,11 @@ static int g_process_dir(const char *path, const grep_opt_t *o, int depth) {
 
 static void grep_usage(void) {
     fprintf(stderr,
-            "usage: grep [-i] [-n] [-v] [-c] [-l] [-r] PATTERN [FILE...]\n"
+            "usage: grep [-i] [-n] [-v] [-c] [-l] [-q] [-w] [-r] PATTERN [FILE...]\n"
             "  PATTERN is a plain substring (no regexes)\n"
             "  -i ignore case, -n line numbers, -v invert match\n"
-            "  -c print count, -l list files with matches, -r recurse dirs\n");
+            "  -c print count, -l list files with matches, -r recurse dirs\n"
+            "  -q quiet (exit status only), -w match whole words\n");
 }
 
 int cact_ub_grep(char **argv, int argc) {
@@ -298,6 +316,9 @@ int cact_ub_grep(char **argv, int argc) {
                     case 'c': o.count = 1; break;
                     case 'l': o.list_only = 1; break;
                     case 'r': o.recurse = 1; break;
+                    case 'q': o.quiet = 1; break;
+                    case 'w': o.word = 1; break;
+                    case 'F': break;   /* fixed strings are the only mode */
                     default:
                         fprintf(stderr, "grep: unknown option -%c\n", *p);
                         grep_usage();
