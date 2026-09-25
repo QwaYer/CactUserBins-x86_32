@@ -248,24 +248,147 @@ static int proc_count(const char *buf, const char *key) {
     return cnt;
 }
 
-/* Текущий режим дисплея: GETRESOURCES + GETCRTC — те же legacy-DRM ioctl,
- * которыми пользуется drmtest, только на чтение.  Любая неудача означает
- * лишь отсутствие строки Display: без GPU sysinfo обязан работать. */
-static int display_mode(unsigned *w, unsigned *h, unsigned *hz) {
-    uint32_t crtcs[8];
-    struct drm_mode_card_res res;
-    struct drm_mode_crtc gc;
+/* struct drm_mode_get_connector::connection — ядро кладёт сюда DRM_MODE_* из
+ * drm_drv.h; в uapi-заголовке этой пары констант нет. */
+#define DRM_MODE_CONNECTED 1
+
+/* /dev/fb0 — загрузочный фреймбуфер (multiboot).  Ядро держит
+ * struct fb_var_screeninfo приватно (fs/vfs/devfs/devfs_devices.c), поэтому
+ * форма ABI повторена здесь: те же 8 полей подряд. */
+#define FBIOGET_VSCREENINFO 0x4600
+struct fb_var_screeninfo {
+    uint32_t xres, yres, xres_virtual, yres_virtual;
+    uint32_t xoffset, yoffset, bits_per_pixel, grayscale;
+};
+
+/* Откуда взялась строка Display. */
+enum display_src {
+    DISP_NONE      = -1,  /* карты нет и фреймбуфера нет — строки не будет */
+    DISP_CRTC      = 0,   /* активный CRTC: этот режим реально сканируется */
+    DISP_CONNECTOR = 1,   /* preferred-режим коннектора: карта есть, modeset'а нет */
+    DISP_FB0       = 2,   /* DRM-карты нет вовсе: размер загрузочного фреймбуфера */
+};
+
+/* определён ниже, рядом с modload */
+static unsigned parse_u32(const char *s);
+
+/* Карты нет: разрешение даёт загрузочный фреймбуфер — то, что выставил
+ * загрузчик и на чём сейчас рисует консоль. */
+static int fb0_mode(unsigned *w, unsigned *h) {
+    struct fb_var_screeninfo vi;
+    int fd = open("/dev/fb0", O_RDWR);
+    if (fd < 0) fd = open("/dev/fb0", O_RDONLY);
+    if (fd < 0) return -1;
+
+    memset(&vi, 0, sizeof(vi));
+    int rc = ioctl(fd, FBIOGET_VSCREENINFO, &vi);
+    close(fd);
+    if (rc != 0 || vi.xres == 0 || vi.yres == 0) return -1;
+    *w = vi.xres;
+    *h = vi.yres;
+    return 0;
+}
+
+/* Видеоадаптер с DRM-карты: /dev/dri/card0 существует, только когда драйвер
+ * зарегистрировал устройство, а DRM_IOCTL_VERSION отдаёт ops->name и версию —
+ * то же, что drmGetVersion().  -1, если карты нет. */
+static int gpu_drm_name(char *out, int cap, int *major, int *minor, int *patch) {
+    struct drm_version v;
     int fd = open("/dev/dri/card0", O_RDWR);
     if (fd < 0) return -1;
 
+    memset(&v, 0, sizeof(v));
+    v.name = out;
+    v.name_len = (size_t)(cap - 1);
+    if (ioctl(fd, DRM_IOCTL_VERSION, &v) != 0) {
+        close(fd);
+        return -1;
+    }
+    close(fd);
+
+    /* name_len — полная длина имени: ядро копирует min(имя, буфер) и NUL не
+     * пишет, так что терминатор ставим сами. */
+    int len = (int)v.name_len;
+    if (len < 0) len = 0;
+    if (len > cap - 1) len = cap - 1;
+    out[len] = '\0';
+    *major = v.version_major;
+    *minor = v.version_minor;
+    *patch = v.version_patchlevel;
+    return 0;
+}
+
+/* Фоллбек без DRM-карты: дисплей-контроллер (class_code 0x03) среди PCI-функций
+ * /dev/modinfo.  Там у каждого узла "[pci N]" напечатаны vendor_id, device_id и
+ * class_code, поэтому берём их из одного блока; секцию "[drv N]" пропускаем —
+ * это драйверы, а не найденное железо. */
+static int gpu_pci_ids(unsigned *vendor, unsigned *device) {
+    static char buf[16384];
+    int got = nio_read_file("/dev/modinfo", buf, sizeof(buf) - 1);
+    if (got <= 0) return -1;
+    buf[got] = '\0';
+
+    unsigned v = 0, d = 0, cls = 0xFFFFFFFFu;
+    int have_v = 0, have_d = 0, in_pci = 0;
+    const char *p = buf;
+
+    while (*p) {
+        const char *e = p;
+        while (*e && *e != '\n') e++;
+
+        const char *s = p;
+        while (*s == ' ' || *s == '\t') s++;
+
+        if (strncmp(s, "[pci ", 5) == 0) {
+            in_pci = 1;
+            v = d = 0;
+            cls = 0xFFFFFFFFu;
+            have_v = have_d = 0;
+        } else if (strncmp(s, "[drv ", 5) == 0) {
+            in_pci = 0;
+        } else if (in_pci && strncmp(s, "vendor_id:", 10) == 0) {
+            v = parse_u32(s + 10);
+            have_v = 1;
+        } else if (in_pci && strncmp(s, "device_id:", 10) == 0) {
+            d = parse_u32(s + 10);
+            have_d = 1;
+        } else if (in_pci && strncmp(s, "class_code:", 11) == 0) {
+            cls = parse_u32(s + 11);
+        }
+
+        if (in_pci && have_v && have_d && cls == 0x03) {
+            *vendor = v;
+            *device = d;
+            return 0;
+        }
+
+        p = *e ? e + 1 : e;
+    }
+    return -1;
+}
+
+/* Режим дисплея: сначала активный CRTC (GETRESOURCES + GETCRTC — те же
+ * legacy-DRM ioctl, что и у любых DRM-клиентов), а если modeset ещё никто не
+ * делал — preferred-режим подключённого коннектора.  Любая неудача означает
+ * лишь отсутствие строки Display: без GPU sysinfo обязан работать. */
+static enum display_src display_mode(unsigned *w, unsigned *h, unsigned *hz) {
+    uint32_t crtcs[8], conns[8];
+    struct drm_mode_card_res res;
+    struct drm_mode_crtc gc;
+    int fd = open("/dev/dri/card0", O_RDWR);
+    if (fd < 0) return DISP_NONE;
+
     memset(&res, 0, sizeof(res));
     memset(crtcs, 0, sizeof(crtcs));
+    memset(conns, 0, sizeof(conns));
     res.crtc_id_ptr = (uint64_t)(uintptr_t)crtcs;
+    res.connector_id_ptr = (uint64_t)(uintptr_t)conns;
     res.count_crtcs = sizeof(crtcs) / sizeof(crtcs[0]);
+    res.count_connectors = sizeof(conns) / sizeof(conns[0]);
 
     if (ioctl(fd, DRM_IOCTL_MODE_GETRESOURCES, &res) != 0) {
         close(fd);
-        return -1;
+        return DISP_NONE;
     }
 
     for (uint32_t i = 0; i < res.count_crtcs && i < sizeof(crtcs) / sizeof(crtcs[0]); i++) {
@@ -277,11 +400,40 @@ static int display_mode(unsigned *w, unsigned *h, unsigned *hz) {
         *h  = gc.mode.vdisplay;
         *hz = gc.mode.vrefresh;
         close(fd);
-        return 0;
+        return DISP_CRTC;
+    }
+
+    /* CRTC ещё не включён: карта есть, поэтому спрашиваем у неё самой режим,
+     * которым она умеет сканировать. */
+    for (uint32_t i = 0; i < res.count_connectors && i < sizeof(conns) / sizeof(conns[0]); i++) {
+        struct drm_mode_get_connector cc;
+        struct drm_mode_modeinfo modes[8];
+        int pick = -1;
+
+        memset(&cc, 0, sizeof(cc));
+        memset(modes, 0, sizeof(modes));
+        cc.connector_id = conns[i];
+        cc.modes_ptr = (uint64_t)(uintptr_t)modes;
+        cc.count_modes = sizeof(modes) / sizeof(modes[0]);
+        if (ioctl(fd, DRM_IOCTL_MODE_GETCONNECTOR, &cc) != 0) continue;
+        if (cc.connection != DRM_MODE_CONNECTED) continue;
+
+        for (uint32_t k = 0; k < cc.count_modes && k < sizeof(modes) / sizeof(modes[0]); k++) {
+            if (modes[k].hdisplay == 0 || modes[k].vdisplay == 0) continue;
+            if (modes[k].type & DRM_MODE_TYPE_PREFERRED) { pick = (int)k; break; }
+            if (pick < 0) pick = (int)k;
+        }
+        if (pick < 0) continue;
+
+        *w  = modes[pick].hdisplay;
+        *h  = modes[pick].vdisplay;
+        *hz = modes[pick].vrefresh;
+        close(fd);
+        return DISP_CONNECTOR;
     }
 
     close(fd);
-    return -1;
+    return DISP_NONE;
 }
 
 static const char sysinfo_usage[] = "usage: sysinfo\n";
@@ -395,16 +547,41 @@ int cact_ub_sysinfo(char **argv, int argc) {
         }
     }
 
-    /* Дисплей — текущий режим KMS, если в системе есть DRM. */
+    /* Видеоадаптер: карта есть — спрашиваем её драйвер; карты нет — показываем
+     * дисплей-контроллер, найденный по PCI. */
     {
-        unsigned dw, dh, dhz;
-        if (display_mode(&dw, &dh, &dhz) == 0) {
+        char gname[64];
+        int gmaj = 0, gmin = 0, gpat = 0;
+        if (gpu_drm_name(gname, sizeof(gname), &gmaj, &gmin, &gpat) == 0) {
+            snprintf(lines[n++], sizeof(lines[0]),
+                     "\033[33mGPU\033[0m: %s %d.%d.%d", gname, gmaj, gmin, gpat);
+        } else {
+            unsigned gv = 0, gd = 0;
+            if (gpu_pci_ids(&gv, &gd) == 0)
+                snprintf(lines[n++], sizeof(lines[0]),
+                         "\033[33mGPU\033[0m: PCI %04x:%04x (no DRM card)", gv, gd);
+        }
+    }
+
+    /* Дисплей: карта есть — активный CRTC, иначе preferred-режим коннектора;
+     * карты нет — загрузочный фреймбуфер /dev/fb0. */
+    {
+        unsigned dw = 0, dh = 0, dhz = 0;
+        enum display_src src = display_mode(&dw, &dh, &dhz);
+        if (src == DISP_NONE && fb0_mode(&dw, &dh) == 0)
+            src = DISP_FB0;
+
+        if (src == DISP_FB0) {
+            snprintf(lines[n++], sizeof(lines[0]),
+                     "\033[33mDisplay\033[0m: %ux%u (fb0)", dw, dh);
+        } else if (src != DISP_NONE) {
+            const char *tag = (src == DISP_CONNECTOR) ? " (preferred)" : "";
             if (dhz > 0)
                 snprintf(lines[n++], sizeof(lines[0]),
-                         "\033[33mDisplay\033[0m: %ux%u @ %u Hz", dw, dh, dhz);
+                         "\033[33mDisplay\033[0m: %ux%u @ %u Hz%s", dw, dh, dhz, tag);
             else
                 snprintf(lines[n++], sizeof(lines[0]),
-                         "\033[33mDisplay\033[0m: %ux%u", dw, dh);
+                         "\033[33mDisplay\033[0m: %ux%u%s", dw, dh, tag);
         }
     }
 
@@ -576,7 +753,8 @@ int cact_ub_modload(char **argv, int argc) {
 
 static const char modunload_usage[] =
     "usage: modunload [PCI_INDEX|DRIVER_NAME]\n"
-    "  no args: unload usermod slot\n"
+    "  no args: unload every loaded module\n"
+    "  name:    module name, e.g. ahci for ahci.cctk\n"
     "  number:  same as [pci N] in /dev/modinfo\n";
 
 int cact_ub_modunload(char **argv, int argc) {
