@@ -4,9 +4,9 @@
 #
 #   meson setup build-meson --cross-file cross/i686-cact-clang.ini \
 #       -Dcactlib=../CactLibc-x86_32 -Dcactsoleinc=../Cactsole-x86_32/include
-#   ninja -C build-meson            # all 47 tools
+#   ninja -C build-meson            # all tools
 #   ninja -C build-meson stage      # distribute into -Dlr_bin / -Dlr_sbin
-#   ninja -C build-meson host-fdisk mkfs.ext4 mkfs.fat32   (host-side tools)
+#   ninja -C build-meson host-fdisk host-mkfs.ext4 host-mkfs.fat32 host-cact-rootfs
 #
 # This repo is a flat set of one-file tools rather than a source tree, so the
 # tables below mirror the Makefile's APPS/SBIN_APPS/DISK_EXTRA lists and a single
@@ -77,15 +77,13 @@ apps = [
   'pwd', 'ls', 'mkdir', 'rmdir', 'tch', 'rm', 'cat', 'wrt', 'stat', 'mv', 'ln',
   'readlink', 'ldd', 'clear', 'date', 'uptime', 'kill', 'su', 'sleep', 'free', 'sysinfo',
   'modload', 'modunload', 'run', 'echo', 'true', 'false', 'whoami', 'id',
-  'chmod', 'chown', 'version', 'nconn', 'net', 'ping', 'dhcp', 'dns', 'ip',
-  'uxtest', 'nc', 'wget', 'dd', 'df', 'grep', 'fdisk', 'mkfs.ext4',
-  'mkfs.fat32', 'cact-rootfs', 'drmtest',
-  'poweroff', 'reboot', 'halt', 'suspend',
+  'chmod', 'chown', 'version', 'ip', 'ping', 'wget', 'dd', 'df', 'grep', 'fdisk', 'mkfs.ext4',
+  'mkfs.fat32', 'cact-rootfs', 'poweroff', 'reboot', 'halt', 'suspend',
 ]
 
 # The Makefile's SBIN_APPS list.
 sbin_apps = [
-  'kill', 'su', 'modload', 'modunload', 'ping', 'dhcp', 'dns', 'ip', 'dd', 'df',
+  'kill', 'su', 'modload', 'modunload', 'ping', 'ip', 'dd', 'df',
   'fdisk', 'mkfs.ext4', 'mkfs.fat32', 'cact-rootfs',
   'poweroff', 'reboot', 'halt', 'suspend',
 ]
@@ -111,7 +109,7 @@ common_lib = static_library('common',
     'common/ex_sys.c',
   ),
   # ex_sys.c reads the current KMS mode for sysinfo, so the shared objects
-  # compile against the same DRM uapi headers drmtest uses.
+  # compile against the DRM uapi headers.
   c_args: c_args + ['-I' + drmuapi])
 
 app_bins = []
@@ -123,14 +121,7 @@ foreach app : apps
     use_common = false
   endif
 
-  # drmtest speaks the kernel's DRM ABI directly, so it compiles against the
-  # same uapi headers the core does.
-  app_c_args = c_args
-  if app == 'drmtest'
-    app_c_args = c_args + ['-I' + drmuapi]
-  endif
-
-  app_lib = static_library('app-' + app.underscorify(), sources, c_args: app_c_args)
+  app_lib = static_library('app-' + app.underscorify(), sources, c_args: c_args)
 
   link_cmd = [ld, '-m', 'elf_i386', '-pie', '--dynamic-linker=/lib/ld.so',
               '--hash-style=both', '-nostdlib', '--gc-sections',
