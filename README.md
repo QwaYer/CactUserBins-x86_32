@@ -104,7 +104,7 @@ CactUserBins-x86_32/
 
 ---
 
-## 💽 Disk / filesystem utilities (Фаза 2)
+## 💽 Disk / filesystem utilities
 
 Installer-building tools — the CactOS analogues of `parted`, `mkfs.ext4`,
 `mkfs.fat` and a rootfs deploy step.  All are installed into **`/sbin`**.
@@ -129,7 +129,7 @@ FAT32 with `fsck.fat`/mtools, and the rootfs skeleton by deploying a tree.
 
 ---
 
-## 🛰️ Network / block / text utilities (Фаза 3)
+## 🛰️ Network / block / text utilities
 
 | Tool | Purpose |
 |------|---------|

@@ -1233,12 +1233,13 @@ int cact_ub_nc(char **argv, int argc) {
 /*                                                                           */
 /*    wget [-o FILE] http[s]://HOST[:PORT][/PATH]                            */
 /*                                                                           */
-/*  умеет Content-Length, chunked и чтение до закрытия (HTTP/1.0), простые    */
-/*  redirect'ы (Location с абсолютным URL или путём).  HTTPS ведёт libc:      */
-/*  после connect() сессия TLS 1.3 поднимается cact_tls_connect(), ключи      */
-/*  остаются в процессе, цепочку сертификатов проверяет ядро по системному    */
-/*  бандлу CA (/etc/ca-certificates.crt, иначе /lib/ca-certificates.crt),     */
-/*  а обмен идёт через cact_tls_read()/cact_tls_write().                     */
+/*  Handles Content-Length, chunked and read-to-close bodies (HTTP/1.0) and    */
+/*  simple redirects (Location as an absolute URL or a path).  HTTPS is done   */
+/*  by libc: after connect() a TLS 1.3 session is opened with                  */
+/*  cact_tls_connect(), the keys stay in the process, the kernel verifies the  */
+/*  certificate chain against the system CA bundle                             */
+/*  (/etc/ca-certificates.crt, else /lib/ca-certificates.crt), and data flows  */
+/*  through cact_tls_read()/cact_tls_write().                                  */
 /* ────────────────────────────────────────────────────────────────────────── */
 
 #define W_UA "cact-wget/0.1"

@@ -367,10 +367,10 @@ static int gpu_pci_ids(unsigned *vendor, unsigned *device) {
     return -1;
 }
 
-/* Режим дисплея: сначала активный CRTC (GETRESOURCES + GETCRTC — те же
- * legacy-DRM ioctl, что и у любых DRM-клиентов), а если modeset ещё никто не
- * делал — preferred-режим подключённого коннектора.  Любая неудача означает
- * лишь отсутствие строки Display: без GPU sysinfo обязан работать. */
+/* Display mode: the active CRTC first (GETRESOURCES + GETCRTC — the same
+ * legacy-DRM ioctls any DRM client uses), and if nothing has modeset yet, the
+ * preferred mode of a connected connector.  Any failure simply means there is
+ * no Display line: sysinfo must work without a GPU. */
 static enum display_src display_mode(unsigned *w, unsigned *h, unsigned *hz) {
     uint32_t crtcs[8], conns[8];
     struct drm_mode_card_res res;
