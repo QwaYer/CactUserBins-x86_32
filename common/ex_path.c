@@ -128,7 +128,7 @@ static int which_one(const char *name, int all) {
         return 1;
     }
     const char *path = getenv("PATH");
-    if (!path || !path[0]) path = "/bin:/sbin";
+    if (!path || !path[0]) path = "/usr/bin:/usr/sbin";
 
     char buf[512];
     const char *p = path;

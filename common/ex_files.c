@@ -292,8 +292,11 @@ static void cat_emit(const char *buf, int n, int number,
 static int cat_stream(int fd, int number, int *at_start, long *lineno) {
     struct stat st;
     long long budget = -1;
-    if (fstat(fd, &st) == 0 && S_ISREG(st.st_mode))
-        budget = (long long)st.st_size;    /* the FS may not report EOF */
+    /* A regular file with a non-zero size bounds the read (the FS may not
+     * report EOF); st_size 0 is "unknown" — procfs files have content but
+     * report 0. */
+    if (fstat(fd, &st) == 0 && S_ISREG(st.st_mode) && st.st_size > 0)
+        budget = (long long)st.st_size;
 
     char buf[4096];
     int ret = 0;

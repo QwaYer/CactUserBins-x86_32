@@ -1238,8 +1238,9 @@ int cact_ub_nc(char **argv, int argc) {
 /*  by libc: after connect() a TLS 1.3 session is opened with                  */
 /*  cact_tls_connect(), the keys stay in the process, the kernel verifies the  */
 /*  certificate chain against the system CA bundle                             */
-/*  (/etc/ca-certificates.crt, else /lib/ca-certificates.crt), and data flows  */
-/*  through cact_tls_read()/cact_tls_write().                                  */
+/*  (/etc/ssl/certs/ca-certificates.crt, else the image copy at               */
+/*  /usr/share/ca-certificates.crt), and data flows through                    */
+/*  cact_tls_read()/cact_tls_write().                                          */
 /* ────────────────────────────────────────────────────────────────────────── */
 
 #define W_UA "cact-wget/0.1"

@@ -645,7 +645,7 @@ int cact_ub_sysinfo(char **argv, int argc) {
 
     /* Programs: count the entries in the directories CactUserBins is installed into. */
     {
-        static const char *pkgdirs[] = {"/bin", "/sbin", NULL};
+        static const char *pkgdirs[] = {"/usr/bin", "/usr/sbin", NULL};
         int pkg = 0;
         for (int d = 0; pkgdirs[d]; d++) {
             int fd = open(pkgdirs[d], O_RDONLY, 0);
@@ -739,7 +739,7 @@ static const char modload_usage[] =
     "usage: modload PATH [VENDOR_ID DEVICE_ID]\n"
     "  IDs omitted: use cact_pci_* manifest inside the .cctk\n"
     "  example: modload virtio_net.cctk\n"
-    "  example: modload /lib/virtio_net.cctk 0x1AF4 0x1041\n";
+    "  example: modload /usr/lib/modules/virtio_net.cctk 0x1AF4 0x1041\n";
 
 int cact_ub_modload(char **argv, int argc) {
     if (argc >= 2 && strcmp(argv[1], "--help") == 0) {

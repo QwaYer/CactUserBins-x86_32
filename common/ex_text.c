@@ -3,8 +3,9 @@
  *
  *   head  tail  wc  sort  uniq  cut  tr  tee  seq  yes  printf
  *
- * All of them read through cact_ub_read_all(), so a regular file is read up
- * to its st_size and a pipe/device is read to EOF.  Option syntax follows the
+ * All of them read through cact_ub_read_all(), so a regular file with a known
+ * non-zero size is read up to its st_size, while a size-0 regular file (procfs
+ * virtual file) or a pipe/device is read to EOF.  Option syntax follows the
  * GNU tools closely enough for scripts: "-n N", "-nN", "--help".
  */
 

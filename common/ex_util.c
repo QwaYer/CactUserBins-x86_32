@@ -19,7 +19,10 @@ char *cact_ub_read_all(const char *path, size_t *len) {
 
     struct stat st;
     int have_st = (fstat(fd, &st) == 0);
-    int bounded = have_st && S_ISREG(st.st_mode);
+    /* Only a non-zero st_size bounds the read.  procfs/sysfs virtual files are
+     * regular files with st_size 0 but do have content, so a zero size means
+     * "unknown" here, not "empty". */
+    int bounded = have_st && S_ISREG(st.st_mode) && st.st_size > 0;
 
     size_t cap = bounded ? (size_t)st.st_size + 1 : 4096;
     char *buf = (char *)malloc(cap ? cap : 1);

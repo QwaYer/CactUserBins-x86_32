@@ -13,10 +13,12 @@
 #include <stddef.h>
 
 /* Read a whole stream into a malloc'd, NUL-terminated buffer.
- * path == NULL reads stdin.  Regular files are read up to st_size, so a
- * filesystem that does not report EOF on read() past the end cannot make the
- * caller loop forever.  Returns the buffer (caller frees) and stores the byte
- * count in *len, or NULL on error. */
+ * path == NULL reads stdin.  A regular file with a non-zero st_size is read up
+ * to st_size, so a filesystem that does not report EOF on read() past the end
+ * cannot make the caller loop forever.  A size-0 regular file (procfs/sysfs
+ * virtual file) is read to EOF instead: its st_size is unknown, not empty.
+ * Returns the buffer (caller frees) and stores the byte count in *len, or NULL
+ * on error. */
 char *cact_ub_read_all(const char *path, size_t *len);
 
 /* Write the whole buffer, retrying short writes.  0 on success, -1 on error. */

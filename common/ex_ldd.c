@@ -3,7 +3,7 @@
  *
  * Unlike glibc's ldd this is a pure reader: it never executes the target and
  * never lets ld.so map it.  It parses the ELF program/dynamic headers itself,
- * resolves every DT_NEEDED against $LD_LIBRARY_PATH, /lib and /usr/lib, walks
+ * resolves every DT_NEEDED against $LD_LIBRARY_PATH and /usr/lib, walks
  * the dependency graph breadth-first and prints the result in the GNU shape.
  * The address column is the object's link-time load address (CactOS maps every
  * image at its link address), not a runtime probe.
@@ -422,7 +422,7 @@ static int try_dir(const char *dir, const char *name, char *out, uint32_t outsz)
 
 static int ldd_find_library(const char *name, char *out, uint32_t outsz)
 {
-    static const char *const dirs[] = { "/lib", "/usr/lib" };
+    static const char *const dirs[] = { "/usr/lib" };
     const char *env, *p, *q;
     int i;
 

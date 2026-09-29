@@ -216,18 +216,13 @@ static int g_process_file(const char *path, const grep_opt_t *o,
     }
     int rc;
     struct stat st;
-    if (fstat(fd, &st) == 0 && S_ISREG(st.st_mode)) {
-        if (st.st_size == 0) {
-            rc = 1;          /* empty file — no matches, do not read */
-        } else {
-            /* read exactly st_size bytes: if the FS driver does not report EOF
-             * on read() past the end of the file, we avoid an endless wait */
-            rc = g_run_fd(fd, o, path, show_name,
-                          (unsigned long long)st.st_size);
-        }
-    } else {
+    /* Read exactly st_size bytes when it is known and non-zero, so an FS driver
+     * that does not report EOF cannot make us wait forever.  st_size 0 means
+     * "unknown" (procfs virtual files report 0), so read those to EOF. */
+    if (fstat(fd, &st) == 0 && S_ISREG(st.st_mode) && st.st_size > 0)
+        rc = g_run_fd(fd, o, path, show_name, (unsigned long long)st.st_size);
+    else
         rc = g_run_fd(fd, o, path, show_name, 0);
-    }
     close(fd);
     return rc;
 }

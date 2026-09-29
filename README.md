@@ -5,7 +5,7 @@
   <img src="https://img.shields.io/badge/language-C-orange.svg?style=for-the-badge" alt="Language: C">
   <img src="https://img.shields.io/badge/link-PIE%20%2B%20clibc.so-purple.svg?style=for-the-badge" alt="PIE + clibc.so">
   <img src="https://img.shields.io/badge/layout-one%20ELF%20per%20tool-blue.svg?style=for-the-badge" alt="One ELF per tool">
-  <img src="https://img.shields.io/badge/tools-83-green.svg?style=for-the-badge" alt="83 tools">
+  <img src="https://img.shields.io/badge/tools-85-green.svg?style=for-the-badge" alt="85 tools">
   <img src="https://img.shields.io/badge/install-LocalRepoCactOS-0369a1.svg?style=for-the-badge" alt="install → LocalRepoCactOS">
 </p>
 
@@ -20,7 +20,7 @@
 
 | | |
 |---|---|
-| **Utilities** | **83** standalone programs (see [`meson.build`](meson.build) `apps`) |
+| **Utilities** | **85** standalone programs (see [`meson.build`](meson.build) `apps`) |
 | **`/bin` vs `/sbin`** | **`lr_bin`** / **`lr_sbin`** options used by the **`stage`** target (staging dirs under **LocalRepo**) |
 | **Shared objects** | **`common/ex_*.c`** compiled once; each link pulls **`start.o`** + **one** `*/main.o` + all **`common/*.o`** with **`--gc-sections`** so unused entrypoints are dropped |
 | **Load address** | PIE **ET_DYN** at **`0x08000000`** ([`link.ld`](link.ld)) — same family as **cactsole** / **cgoct** |
@@ -36,7 +36,7 @@
 | **[Cactsole-x86_32](https://github.com/QwaYer/Cactsole-x86_32)** | Interactive shell; it does **not** describe these tools — **`help <tool>`** runs the tool with **`--help`** and each tool documents itself |
 | **[LocalRepoCactOS-x86_32](../LocalRepoCactOS-x86_32)** | **`ninja -C build-meson stage`** fills **`lib/bin/`** and **`lib/sbin/`** here before **`cctkfs.img`** is packed |
 | **[CactOS-x86_32](https://github.com/QwaYer/CactOS-x86_32)** | **Workspace integrator** — sets **`CACTLIB`**, **`CACTSOLEINC`**, **`LR_*`**, then **`LocalRepo`** + **kernel** + **CactBridge** |
-| **[CactKernel-x86_32](https://github.com/QwaYer/CactKernel-x86_32)** | **binfs** / **sbinfs** overlay **`/bin/*`** and **`/sbin/*`** from the **cctkfs** module on top of disk-backed FS |
+| **[CactKernel-x86_32](https://github.com/QwaYer/CactKernel-x86_32)** | **binfs** / **sbinfs** overlay **`/usr/bin/*`** and **`/usr/sbin/*`** from the **cctkfs** module (reached through the **`/bin`** and **`/sbin`** symlinks) on top of disk-backed FS |
 
 ---
 
@@ -88,6 +88,7 @@ CactUserBins-x86_32/
 ├── fdisk/                # parted-analog: ptab.c (pure) + main.c
 ├── mkfs.ext4/            # ext4 formatter: ext4_fmt.c (pure) + main.c
 ├── mkfs.fat32/           # FAT32 formatter: fat32_fmt.c (pure) + main.c
+├── ced/                  # nano-like editor: editor.c (screen + buffer) + main.c
 ├── cact-rootfs/          # root skeleton + boot/ deploy
 ├── devtest/              # /dev VT + PTY self-test helper
 ├── tests/                # (empty in this checkout — the old host test target is gone)
@@ -95,7 +96,7 @@ CactUserBins-x86_32/
 ```
 
 **`apps`** (authoritative list in [`meson.build`](meson.build)):  
-`pwd` `ls` `mkdir` `rmdir` `rm` `cat` `wrt` `stat` `mv` `ln` `readlink` `ldd` `clear` `date` `uptime` `kill` `su` `sleep` `free` `sysinfo` `modload` `modunload` `run` `echo` `true` `false` `whoami` `id` `chmod` `chown` `version` `ip` `ping` `wget` `dd` `df` `grep` `fdisk` `mkfs.ext4` `mkfs.fat32` `cact-rootfs` `poweroff` `reboot` `halt` `suspend` `head` `tail` `wc` `sort` `uniq` `cut` `tr` `tee` `seq` `yes` `printf` `cp` `touch` `basename` `dirname` `realpath` `which` `mktemp` `tty` `uname` `hostname` `nproc` `sync` `env` `printenv` `du` `find` `ps` `lsmod` `lspci` `lsusb` `dmesg` `sha256sum` `sha384sum` `md5sum` `sha1sum` `mount` `umount`
+`pwd` `ls` `mkdir` `rmdir` `rm` `cat` `wrt` `stat` `mv` `ln` `readlink` `ldd` `clear` `date` `uptime` `kill` `su` `sleep` `free` `sysinfo` `modload` `modunload` `run` `echo` `true` `false` `whoami` `id` `chmod` `chown` `version` `ip` `ping` `wget` `dd` `df` `grep` `fdisk` `mkfs.ext4` `mkfs.fat32` `cact-rootfs` `poweroff` `reboot` `halt` `suspend` `head` `tail` `wc` `sort` `uniq` `cut` `tr` `tee` `seq` `yes` `printf` `cp` `touch` `basename` `dirname` `realpath` `which` `mktemp` `tty` `uname` `hostname` `nproc` `sync` `env` `printenv` `du` `find` `ps` `lsmod` `lspci` `lsusb` `dmesg` `sha256sum` `sha384sum` `md5sum` `sha1sum` `mount` `umount` `ced`
 
 ---
 
@@ -105,7 +106,7 @@ CactUserBins-x86_32/
 |-------|--------|
 | **Why one ELF per tool** | Smaller individual binaries than a busybox-style monolith; **`--gc-sections`** keeps only the **`main`** and **`cact_ub_*`** paths each `main.c` calls |
 | **Self-documenting tools** | Every tool handles **`--help`** as its first argument: it prints its own usage to **stdout** and exits **0**. Usage text is defined once per tool and shared with its argument-error path, so the two cannot drift. This is what **cactsole**'s **`help <tool>`** relies on — the shell stores no description of these programs. Only the long form **`--help`** is a help flag; **`-h`** is not, because it already means **`--human-readable`** for **`df`**. |
-| **FHS-style paths** | **`sbinfs`** exposes **`/sbin/*`** for privileged-style tools (`kill`, `su`, PCI **`modload`** / **`modunload`**, **`ping`**, **`ip`**, the power tools, disk/fs tools) |
+| **FHS-style paths** | **`sbinfs`** exposes **`/usr/sbin/*`** (as **`/sbin/*`** through the symlink) for privileged-style tools (`kill`, `su`, PCI **`modload`** / **`modunload`**, **`ping`**, **`ip`**, the power tools, disk/fs tools) |
 | **Syscall drift** | If **`syscall.h`** / libc numbers change in CactLib, rebuild **libc**, then **re-link** cactsole, **CactUserBins**, cgoct, and any other dynamic ELFs |
 
 ---
@@ -113,14 +114,14 @@ CactUserBins-x86_32/
 ## 💽 Disk / filesystem utilities
 
 Installer-building tools — the CactOS analogues of `parted`, `mkfs.ext4`,
-`mkfs.fat` and a rootfs deploy step.  All are installed into **`/sbin`**.
+`mkfs.fat` and a rootfs deploy step.  All are installed into **`/usr/sbin`**.
 
 | Tool | Purpose |
 |------|---------|
 | **`fdisk`** | MBR/GPT partition-table editor. Reads/writes `/dev/<disk>` nodes (whole-disk CactOS block devices) or raw images; after `w` asks the kernel to re-scan the disk (`/dev/sys` ioctl) so `/dev/sdaN` appears without a reboot. Verbs: `p o g n d t b l w`; pure logic in `fdisk/ptab.c`. |
 | **`mkfs.ext4`** | Formats a device/partition/image as ext4 compatible with the CactOS `ext4.cctk` module: 4096-byte blocks, no journal / 64-bit / metadata_csum / flex_bg, inode size ≥ 256. `-b`, `-I`, `-L`. |
 | **`mkfs.fat32`** | Formats a device as a standard FAT32 volume (`-n label`); mirrors the FAT and writes FSInfo + backup boot sector. |
-| **`cact-rootfs`** | Deploys the root skeleton onto a mounted target: `boot/` (kernel + `cctkfs.img` + generated `grub.cfg`), `/etc`, `/var/{log,run,tmp}`, and optionally copies `/bin /sbin /lib` from the running tree (`-b`). |
+| **`cact-rootfs`** | Deploys the root skeleton onto a mounted target: `boot/` (kernel + `cctkfs.img` + generated `grub.cfg`), `/etc`, `/var/{log,run,tmp}`, the **`/usr/{bin,sbin,lib,include,share}`** dirs and the **`/bin`→`usr/bin`** style symlinks; `-b` also copies `/usr` from the running tree. |
 
 Format logic lives in portable C (`fdisk/ptab.c`, `mkfs.ext4/ext4_fmt.c`,
 `mkfs.fat32/fat32_fmt.c`) so it can be validated on the host:
@@ -146,7 +147,7 @@ FAT32 with `fsck.fat`/mtools, and the rootfs skeleton by deploying a tree.
 | **`df`** | Free-space reporter for mounted ext4. Mount list is read from `/proc/mounts` (fallback: `/etc/mounts`, `/etc/mnts`); total/free come from the on-disk ext4 superblock of the partition node (same path `mkfs.ext4` uses). `df /dev/sda1` queries one device directly. |
 | **`grep`** | Line-oriented text search: `grep [-i] [-n] [-v] [-c] [-l] [-q] [-w] [-r] [-F] PATTERN [FILE...]` (plain substring, no regexes), files or stdin, recursive mode via `getdents`. Exit 0 = match, 1 = none, 2 = error. |
 
-`wget`/`grep` install into `/bin`; `ping`/`ip`/`dd`/`df` into `/sbin` next to the disk/fs and power tools.
+`wget`/`grep` install into `/usr/bin`; `ping`/`ip`/`dd`/`df` into `/usr/sbin` next to the disk/fs and power tools.
 
 ---
 
@@ -173,7 +174,7 @@ Several of them are backed by kernel additions made alongside this suite:
 `sync`, `env`, `printenv`, `free` (`/proc/meminfo`), `ps` (with a `COMMAND`
 column from `/proc/<pid>/comm`), `lsmod` (`/proc/modules`), `lspci`
 (`/dev/modinfo`), `lsusb` (`/proc/usb`), `dmesg` (`-r`, `-n N`), `mount`,
-`umount` (`/sbin`; listing via `/proc/mounts`).
+`umount` (`/usr/sbin`; listing via `/proc/mounts`).
 
 ### Hashes
 `sha256sum`, `sha384sum` (kernel `/dev/crypto`, one-shot, 1 MiB per call),
@@ -192,6 +193,70 @@ arguments), `id -u/-g/-G/-n`, `chmod -R`, `chown -R`.
 
 ---
 
+## ✍️ Editor — `ced`
+
+`ced` is a nano-like full-screen editor: `ced [FILE]`.  It owns the whole
+console for as long as it runs — title bar, soft-wrapped text area, status
+line and shortcut bar — and restores a clean screen on exit.
+
+| Keys | |
+|------|---|
+| arrows, Home/End, PgUp/PgDn, Delete | move / delete under cursor |
+| Insert, Enter, Backspace, Tab | overwrite toggle, split line, delete before cursor, tab |
+| `^A`/`^E`, `^B`/`^F`, `^P`/`^N`, `^V`/`^Y` | line start/end, char, line, page |
+| `^K` / `^U` / `^Q` | cut the current line / paste (uncut, multi-line) / undo |
+| `^W` | search (case-insensitive, wraps; Enter repeats the last search) |
+| `^T` / `^R` | go to line / insert a file at the cursor |
+| `^O` | save (asks for a name when the buffer is new) |
+| `^C` | cursor position (line, column, character) |
+| `^G` / `^L` / `^X` | help screen / redraw / exit (prompts when modified) |
+
+Design notes:
+
+- **No termios.** The console has no line discipline at all — no echo, no
+  canonical mode, one key per `read()` — so the editor is raw by construction;
+  `tcgetattr` is not involved.  The geometry comes from `TIOCGWINSZ`.
+- **Everything on screen is ANSI.** Positioning (`CSI H`), erasing (`CSI J/K`)
+  and **SGR 7 reverse video** for the bars and the block cursor.  Each row is
+  drawn with a single `write()` because the console resets colour/reverse state
+  per write, and unchanged rows are skipped by comparing them with a row cache.
+- **Soft wrap.**  Long lines wrap at the window width (tabs advance to 8-column
+  stops); the cursor's wrap segment is derived from its display column, so it
+  lands correctly on a continuation row.
+- **Undo (`^Q`) by whole-buffer snapshots**, so it is exact whatever primitive
+  made the change.  Consecutive edits of the same kind on the same line coalesce
+  (typing a word is one step), the stack is capped by an 8 MiB budget with the
+  oldest snapshot dropped first, and a snapshot that cannot be allocated just
+  makes that one edit non-undoable instead of failing the editor.
+- **Save keeps one backup generation**: the previous contents of the file are
+  copied to `FILE~` before the target is truncated, so a failed write (ENOSPC,
+  a full disk) costs nothing.
+- **Ctrl-C shows the position** and never touches the buffer; Ctrl-Z parks the
+  editor, which the shell tracks as a stopped job — `fg` resumes it with the
+  buffer intact.  Ctrl-\ is caught the same way as Ctrl-C.
+- It is a **standalone tool** (no `common/` objects): `ced/editor.c` holds the
+  buffer, the wrap maths and the screen, `ced/main.c` is the usual entry shim.
+
+The console-side pieces it relies on live in **CactKernel**: `TIOCGWINSZ`
+answers with the real framebuffer grid, SGR 7/27 paint a filled cell, and the
+USB HID driver emits xterm `CSI` sequences for arrows / Home / End / PgUp /
+PgDn / Delete / Insert (this also makes cactsole's history arrows work).  Three
+signal-path fixes came with the editor, all of them generic rather than
+editor-specific:
+
+- a signal with a **user handler is actually delivered** — it used to be
+  dropped before `deliver_pending_signal()` could build the handler frame, so
+  no custom handler ever ran;
+- `sigreturn()` keeps the return value it restored — the generic syscall exit
+  used to overwrite `eax` with the *sigreturn* result, turning an interrupted
+  `read()` into a spurious zero-length one (which is also why a keystroke could
+  vanish when a background job exited);
+- a blocking terminal `read()` reports `EINTR` while a signal with a handler is
+  pending, so Ctrl-C reaches the handler at once instead of waiting for the next
+  key.
+
+---
+
 ## 🚀 Runtime
 
-After the kernel starts **`/bin/init`** (**cgoct**), the usual path is **`cactsole`** spawning these programs by **`execve`** when you type a command name. The same binaries are available on **`PATH=/bin:/sbin`** (see **cgoct** / **cactsole** environment defaults).
+After the kernel starts **`/usr/bin/init`** (**cgoct**), the usual path is **`cactsole`** spawning these programs by **`execve`** when you type a command name. The same binaries are available on **`PATH=/usr/bin:/usr/sbin`** (see **cgoct** / **cactsole** environment defaults).

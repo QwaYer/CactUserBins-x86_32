@@ -4,12 +4,14 @@
  *
  * Given a mounted target directory it creates the base tree, deploys boot
  * files (kernel + initramfs/module archive + optional grub.cfg) under
- * boot/, and can copy the running userspace (/bin /sbin /lib) from a source
- * root so the target becomes self-contained.
+ * boot/, and can copy the running userspace (/usr) from a source root so the
+ * target becomes self-contained.  Userland is usrmerge: /usr/bin, /usr/sbin
+ * and /usr/lib are the real directories and /bin, /sbin, /lib are symlinks
+ * into them.
  *
  *   cact-rootfs [options] TARGET
- *     -s DIR     source root to copy /bin,/sbin,/lib from (default "/")
- *     -b         also copy /bin,/sbin,/lib into TARGET
+ *     -s DIR     source root to copy /usr from (default "/")
+ *     -b         also copy /usr into TARGET and link /bin,/sbin,/lib
  *     -k FILE    copy FILE -> TARGET/boot/kernel.bin
  *     -m FILE    copy FILE -> TARGET/boot/cctkfs.img
  *     -g FILE    copy FILE -> TARGET/boot/grub/grub.cfg (default: generated)
@@ -52,6 +54,22 @@ static void fail(const char *s) {
 static int is_dir(const char *p) {
     struct stat st;
     return stat(p, &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+/* usrmerge: the whole userland lives under /usr; the classic top-level names
+ * are symlinks into it. */
+static const char *const BASE_DIRS[] = { "/usr" };
+static const struct { const char *name; const char *target; } MERGE_LINKS[] = {
+    { "bin",  "usr/bin"  },
+    { "sbin", "usr/sbin" },
+    { "lib",  "usr/lib"  },
+};
+
+static void make_symlink(const char *target, const char *linkpath) {
+    if (symlink(target, linkpath) == 0)
+        msg("linked %s -> %s\n", linkpath, target);
+    /* A failing symlink means the entry already exists (re-install) or the
+     * target filesystem has no symlink support; leave the tree untouched. */
 }
 
 /* mkdir -p */
@@ -222,12 +240,28 @@ int main(int argc, char **argv) {
     snprintf(p, sizeof(p), "%s/tmp", target);         mkdir_p(p);
     snprintf(p, sizeof(p), "%s/dev", target);         mkdir_p(p);
     snprintf(p, sizeof(p), "%s/proc", target);        mkdir_p(p);
+
+    /* usrmerge tree: the /usr subdirectories always exist, even without -b. */
+    {
+        static const char *const usr_sub[] = {
+            "usr/bin", "usr/sbin", "usr/lib", "usr/include", "usr/share"
+        };
+        for (size_t i = 0; i < sizeof(usr_sub) / sizeof(usr_sub[0]); i++) {
+            snprintf(p, sizeof(p), "%s/%s", target, usr_sub[i]);
+            mkdir_p(p);
+        }
+        for (size_t i = 0; i < sizeof(MERGE_LINKS) / sizeof(MERGE_LINKS[0]); i++) {
+            char link[512];
+            snprintf(link, sizeof(link), "%s/%s", target, MERGE_LINKS[i].name);
+            make_symlink(MERGE_LINKS[i].target, link);
+        }
+    }
+
     if (copy_base) {
-        const char *base[] = { "/bin", "/sbin", "/lib", "/usr" };
-        for (size_t i = 0; i < sizeof(base) / sizeof(base[0]); i++) {
+        for (size_t i = 0; i < sizeof(BASE_DIRS) / sizeof(BASE_DIRS[0]); i++) {
             char s[512], d[512];
-            snprintf(s, sizeof(s), "%s%s", srcroot, base[i]);
-            snprintf(d, sizeof(d), "%s%s", target, base[i]);
+            snprintf(s, sizeof(s), "%s%s", srcroot, BASE_DIRS[i]);
+            snprintf(d, sizeof(d), "%s%s", target, BASE_DIRS[i]);
             if (is_dir(s)) {
                 msg("copying %s -> %s\n", s, d);
                 copy_tree(s, d);

@@ -221,8 +221,10 @@ static int hash_show(const char *path, int is_md5) {
 
     struct stat st;
     long long budget = -1;
-    if (fstat(fd, &st) == 0 && S_ISREG(st.st_mode))
-        budget = (long long)st.st_size;   /* the FS may not report EOF */
+    /* Non-zero st_size bounds the read (the FS may not report EOF); a size-0
+     * regular file (procfs) is not empty, just of unknown length. */
+    if (fstat(fd, &st) == 0 && S_ISREG(st.st_mode) && st.st_size > 0)
+        budget = (long long)st.st_size;
 
     md5_ctx  m; sha1_ctx s;
     md5_init(&m); sha1_init(&s);
