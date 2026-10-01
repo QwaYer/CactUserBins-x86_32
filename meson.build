@@ -153,7 +153,10 @@ foreach app : apps
     output: app,
     input: sources,
     command: link_cmd,
-    depend_files: files('link.ld'),
+    # start.o and clibc.so are linked in, so a rebuilt CactLibc must relink every
+    # tool; without them here ninja keeps the old binary and the change silently
+    # does not take effect.
+    depend_files: files('link.ld') + [start_o, clibc_so],
     build_by_default: true)
 endforeach
 
