@@ -5,7 +5,7 @@
   <img src="https://img.shields.io/badge/language-C-orange.svg?style=for-the-badge" alt="Language: C">
   <img src="https://img.shields.io/badge/link-PIE%20%2B%20clibc.so-purple.svg?style=for-the-badge" alt="PIE + clibc.so">
   <img src="https://img.shields.io/badge/layout-one%20ELF%20per%20tool-blue.svg?style=for-the-badge" alt="One ELF per tool">
-  <img src="https://img.shields.io/badge/tools-85-green.svg?style=for-the-badge" alt="85 tools">
+  <img src="https://img.shields.io/badge/tools-84-green.svg?style=for-the-badge" alt="84 tools">
   <img src="https://img.shields.io/badge/install-LocalRepoCactOS-0369a1.svg?style=for-the-badge" alt="install → LocalRepoCactOS">
 </p>
 
@@ -20,7 +20,7 @@
 
 | | |
 |---|---|
-| **Utilities** | **85** standalone programs (see [`meson.build`](meson.build) `apps`) |
+| **Utilities** | **84** standalone programs (see [`meson.build`](meson.build) `apps`) |
 | **`/bin` vs `/sbin`** | **`lr_bin`** / **`lr_sbin`** options used by the **`stage`** target (staging dirs under **LocalRepo**) |
 | **Shared objects** | **`common/ex_*.c`** compiled once; each link pulls **`start.o`** + **one** `*/main.o` + all **`common/*.o`** with **`--gc-sections`** so unused entrypoints are dropped |
 | **Load address** | PIE **ET_DYN** at **`0x08000000`** ([`link.ld`](link.ld)) — same family as **cactsole** / **cgoct** |
@@ -73,15 +73,16 @@ CactUserBins-x86_32/
 │   ├── ex_dd.c           # dd
 │   ├── ex_df.c           # df
 │   ├── ex_grep.c         # grep
+│   ├── ex_hash.c         # md5sum, sha1sum (portable C, streamed)
 │   ├── ex_ldd.c          # ldd (ELF32 DT_NEEDED reader, GNU-compatible flags)
-│   ├── ex_sys.c          # clear, date, uptime, kill, su, sleep, free, sysinfo, run, modload, modunload
+│   ├── ex_sys.c          # clear, date, uptime, kill, su, sleep, free, sysinfo, run, modload, modunload, poweroff, reboot, halt
 │   ├── ex_echo.c         # echo (with -n / -e)
 │   ├── ex_nav.c          # pwd (cd stays a cactsole builtin)
 │   ├── ex_copy.c         # cp, touch
 │   ├── ex_path.c         # basename, dirname, realpath, which, mktemp, tty
 │   ├── ex_system.c       # uname, hostname, nproc, sync, env, printenv, du, find
 │   ├── ex_text.c         # head, tail, wc, sort, uniq, cut, tr, tee, seq, yes, printf
-│   ├── ex_proc.c         # ps, mount, umount, lsmod, lspci, dmesg, sha256sum, sha384sum
+│   ├── ex_proc.c         # ps, mount, umount, lsmod, lspci, lsusb, dmesg, sha256sum, sha384sum
 │   ├── ex_util.c/.h      # shared helpers (read_all, dir_foreach, mkdir -p, copy_file, ...)
 ├── build-meson/          # generated ELFs (gitignored)
 ├── cat/ ls/ …/           # one directory per utility; each holds main.c → main.o
@@ -95,7 +96,7 @@ CactUserBins-x86_32/
 ```
 
 **`apps`** (authoritative list in [`meson.build`](meson.build)):  
-`pwd` `ls` `mkdir` `rmdir` `rm` `cat` `wrt` `stat` `mv` `ln` `readlink` `ldd` `clear` `date` `uptime` `kill` `su` `sleep` `free` `sysinfo` `modload` `modunload` `run` `echo` `true` `false` `whoami` `id` `chmod` `chown` `version` `ip` `ping` `wget` `dd` `df` `grep` `fdisk` `mkfs.ext4` `mkfs.fat32` `cact-rootfs` `poweroff` `reboot` `halt` `head` `tail` `wc` `sort` `uniq` `cut` `tr` `tee` `seq` `yes` `printf` `cp` `touch` `basename` `dirname` `realpath` `which` `mktemp` `tty` `uname` `hostname` `nproc` `sync` `env` `printenv` `du` `find` `ps` `lsmod` `lspci` `lsusb` `dmesg` `sha256sum` `sha384sum` `md5sum` `sha1sum` `mount` `umount` `ced`
+`pwd` `ls` `mkdir` `rmdir` `rm` `cat` `wrt` `stat` `mv` `ln` `readlink` `ldd` `clear` `date` `uptime` `kill` `su` `sleep` `free` `sysinfo` `modload` `modunload` `run` `echo` `true` `false` `whoami` `id` `chmod` `chown` `version` `ip` `ping` `wget` `dd` `df` `grep` `fdisk` `mkfs.ext4` `mkfs.fat32` `cact-rootfs` `poweroff` `reboot` `halt` `head` `tail` `wc` `sort` `uniq` `cut` `tr` `tee` `seq` `yes` `printf` `cp` `touch` `basename` `dirname` `realpath` `which` `mktemp` `tty` `uname` `hostname` `nproc` `sync` `env` `printenv` `du` `find` `ps` `lsmod` `lspci` `lsusb` `dmesg` `sha256sum` `sha384sum` `md5sum` `sha1sum` `wljoin` `mount` `umount` `ced`
 
 ---
 
