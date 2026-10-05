@@ -141,7 +141,7 @@ FAT32 with `fsck.fat`/mtools, and the rootfs skeleton by deploying a tree.
 | Tool | Purpose |
 |------|---------|
 | **`ping`** | ICMP echo client: `ping [-c COUNT] [-i SEC] [-W MS] HOST` (`-c 0` runs until Ctrl-C). Accepts a dotted IPv4 literal or a hostname (resolved through DNS); each reply is matched by id/seq and timed via **`CACT_NETCTL_PING_WAIT`**, and a summary line closes the run. |
-| **`ip`** | Link configuration: reads/writes the kernel's IPv4 address/mask/gateway/DNS through **`CACT_NETCTL_NETCFG(_GET)`** on `/dev/net` — the same path **networkd**/**dhcpd** use. |
+| **`ip`** | Link configuration: reads/writes the kernel's IPv4 address/mask/gateway/DNS through **`CACT_NETCTL_NETCFG(_GET)`** on `/dev/net` — the same path **`dhcpd`** uses. |
 | **`wget`** | Micro HTTP/1.1 GET client: `wget [-o FILE] http[s]://HOST[:PORT][/PATH]`. Resolves host names and speaks HTTPS through the libc **TLS 1.3** client (certificate chain verified against the system CA bundle); handles `Content-Length`, chunked bodies, close-delimited responses and `Location` redirects; the body lands in a file (default: basename of the path). Used by **cactpkg** to fetch manifests. |
 | **`dd`** | Block copier (`if=`/`of=`, `bs=`, `count=`, `skip=`, `seek=`, `conv=notrunc`, `status=none`). `dd if=/dev/zero of=/dev/sda1 bs=1M count=64` exercises the AHCI driver or fills a disk; works against the vfsdev byte-range block nodes. |
 | **`df`** | Free-space reporter for mounted ext4. Mount list is read from `/proc/mounts` (fallback: `/etc/mounts`, `/etc/mnts`); total/free come from the on-disk ext4 superblock of the partition node (same path `mkfs.ext4` uses). `df /dev/sda1` queries one device directly. |
