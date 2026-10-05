@@ -78,7 +78,7 @@ apps = [
   'readlink', 'ldd', 'clear', 'date', 'uptime', 'kill', 'su', 'sleep', 'free', 'sysinfo',
   'modload', 'modunload', 'run', 'echo', 'true', 'false', 'whoami', 'id',
   'chmod', 'chown', 'version', 'ip', 'ping', 'wget', 'dd', 'df', 'grep', 'fdisk', 'mkfs.ext4',
-  'mkfs.fat32', 'cact-rootfs', 'poweroff', 'reboot', 'halt', 'suspend',
+  'mkfs.fat32', 'cact-rootfs', 'poweroff', 'reboot', 'halt',
   'head', 'tail', 'wc', 'sort', 'uniq', 'cut', 'tr', 'tee', 'seq', 'yes', 'printf',
   'cp', 'touch',
   'basename', 'dirname', 'realpath', 'which', 'mktemp', 'tty',
@@ -91,7 +91,7 @@ apps = [
 sbin_apps = [
   'kill', 'su', 'modload', 'modunload', 'ping', 'ip', 'dd', 'df',
   'fdisk', 'mkfs.ext4', 'mkfs.fat32', 'cact-rootfs',
-  'poweroff', 'reboot', 'halt', 'suspend',
+  'poweroff', 'reboot', 'halt',
   'mount', 'umount', 'wljoin',
 ]
 
