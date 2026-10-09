@@ -1070,6 +1070,25 @@ int cact_ub_sysinfo(char **argv, int argc) {
         }
     }
 
+    /* Loopback (lo) — comes up with the stack, so it is reported independently
+     * of whether the NIC has been configured yet. */
+    {
+        int count = (int)nio_dev_cmd("net", CACT_NETCTL_IFACE_COUNT, NULL);
+        for (int i = 0; i < count; i++) {
+            cact_iface_get_arg_t a;
+            memset(&a, 0, sizeof(a));
+            a.index = (uint32_t)i;
+            if (nio_dev_cmd("net", CACT_NETCTL_IFACE_GET, &a) < 0) continue;
+            if ((a.info.flags & CACT_IFACE_FLAG_LOOPBACK) == 0) continue;
+            char ip4[16], addr[24];
+            sysinfo_ipv4(ip4, sizeof(ip4), a.info.ip_host);
+            snprintf(addr, sizeof(addr), "%s/%d",
+                     ip4, sysinfo_prefix(a.info.netmask_host));
+            snprintf(lines[n++], sizeof(lines[0]),
+                     "\033[33mLoopback\033[0m (%s): %s", a.info.name, addr);
+        }
+    }
+
     /* Locale — LC_ALL/LANG from the environment, else /etc/locale.conf. */
     {
         static char locbuf[256];

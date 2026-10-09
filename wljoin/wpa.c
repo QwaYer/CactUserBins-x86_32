@@ -185,3 +185,151 @@ void wl_prf512(const u8 *key, const char *label, const u8 *data, u32 data_len,
         it++;
     }
 }
+
+/* ------------------------------------------------------------------ */
+/* AES-128 + RFC 3394 key unwrap                                       */
+/*                                                                     */
+/* The AP's message 3 carries the GTK inside key data wrapped with the */
+/* KEK (AES-Key-Wrap; the Encrypted Key Data bit is set in the usual    */
+/* case), so the group key can only be read after unwrapping it.        */
+/* ------------------------------------------------------------------ */
+
+static u8 aes_sbox[256];
+static u8 aes_isbox[256];
+static u8 aes_tables_ready;
+
+static u8 gf_mul(u8 a, u8 b) {
+    u8 p = 0;
+    for (int i = 0; i < 8; i++) {
+        if (b & 1) p ^= a;
+        a = (u8)((a << 1) ^ ((a & 0x80) ? 0x1b : 0));
+        b = (u8)(b >> 1);
+    }
+    return p;
+}
+
+static u8 rotl8(u8 x, int n) {
+    return (u8)((x << n) | (x >> (8 - n)));
+}
+
+/* S-box = affine transform of the GF(2^8) inverse (x^254); the inverse box
+ * falls out of the same pass.  Built once, on first unwrap. */
+static void aes_build_tables(void) {
+    if (aes_tables_ready)
+        return;
+    for (int i = 0; i < 256; i++) {
+        u8 x = 0;
+        if (i) {
+            x = 1;
+            for (int e = 0; e < 254; e++)
+                x = gf_mul(x, (u8)i);
+        }
+        u8 s = (u8)(x ^ rotl8(x, 1) ^ rotl8(x, 2) ^ rotl8(x, 3) ^
+                    rotl8(x, 4) ^ 0x63);
+        aes_sbox[i] = s;
+        aes_isbox[s] = (u8)i;
+    }
+    aes_tables_ready = 1;
+}
+
+static const u8 aes_rcon[10] = {
+    0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1b, 0x36
+};
+
+static void aes_expand(const u8 key[16], u8 rk[176]) {
+    memcpy(rk, key, 16);
+    for (int i = 4; i < 44; i++) {
+        u8 t[4];
+        memcpy(t, rk + (i - 1) * 4, 4);
+        if ((i & 3) == 0) {
+            u8 b = t[0]; t[0] = t[1]; t[1] = t[2]; t[2] = t[3]; t[3] = b;
+            for (int j = 0; j < 4; j++) t[j] = aes_sbox[t[j]];
+            t[0] ^= aes_rcon[(i >> 2) - 1];
+        }
+        for (int j = 0; j < 4; j++)
+            rk[i * 4 + j] = (u8)(rk[(i - 4) * 4 + j] ^ t[j]);
+    }
+}
+
+static void aes_add_rk(u8 s[16], const u8 *rk) {
+    for (int i = 0; i < 16; i++) s[i] ^= rk[i];
+}
+
+static void aes_sub(u8 s[16], const u8 *box) {
+    for (int i = 0; i < 16; i++) s[i] = box[s[i]];
+}
+
+static void aes_inv_shift_rows(u8 s[16]) {
+    u8 o[16];
+    for (int r = 0; r < 4; r++)
+        for (int c = 0; c < 4; c++)
+            o[r + 4 * c] = s[r + 4 * ((c - r + 4) & 3)];
+    memcpy(s, o, 16);
+}
+
+static void aes_inv_mix_columns(u8 s[16]) {
+    for (int c = 0; c < 4; c++) {
+        u8 *p = s + 4 * c;
+        u8 a0 = p[0], a1 = p[1], a2 = p[2], a3 = p[3];
+        p[0] = (u8)(gf_mul(a0, 14) ^ gf_mul(a1, 11) ^ gf_mul(a2, 13) ^ gf_mul(a3, 9));
+        p[1] = (u8)(gf_mul(a0, 9)  ^ gf_mul(a1, 14) ^ gf_mul(a2, 11) ^ gf_mul(a3, 13));
+        p[2] = (u8)(gf_mul(a0, 13) ^ gf_mul(a1, 9)  ^ gf_mul(a2, 14) ^ gf_mul(a3, 11));
+        p[3] = (u8)(gf_mul(a0, 11) ^ gf_mul(a1, 13) ^ gf_mul(a2, 9)  ^ gf_mul(a3, 14));
+    }
+}
+
+static void aes_decrypt_block(const u8 rk[176], const u8 in[16], u8 out[16]) {
+    u8 s[16];
+    memcpy(s, in, 16);
+    aes_add_rk(s, rk + 160);
+    for (int r = 9; r >= 1; r--) {
+        aes_inv_shift_rows(s);
+        aes_sub(s, aes_isbox);
+        aes_add_rk(s, rk + 16 * r);
+        aes_inv_mix_columns(s);
+    }
+    aes_inv_shift_rows(s);
+    aes_sub(s, aes_isbox);
+    aes_add_rk(s, rk);
+    memcpy(out, s, 16);
+}
+
+/* RFC 3394 key unwrap: KEK over n wrapped 64-bit blocks, returns the plaintext
+ * length (8*n) or -1 (bad length or the 0xA6A6A6A6A6A6A6A6 integrity check). */
+int wl_aes_unwrap(const u8 kek[16], const u8 *in, int in_len, u8 *out) {
+    static const u8 iv[8] = { 0xa6, 0xa6, 0xa6, 0xa6, 0xa6, 0xa6, 0xa6, 0xa6 };
+    u8 rk[176], a[8], r[32][8];
+    int n;
+
+    if (in_len < 24 || (in_len & 7))
+        return -1;
+    n = in_len / 8 - 1;
+    if (n > 32)
+        return -1;
+
+    aes_build_tables();
+    aes_expand(kek, rk);
+    memcpy(a, in, 8);
+    for (int i = 0; i < n; i++)
+        memcpy(r[i], in + 8 + i * 8, 8);
+
+    for (int j = 5; j >= 0; j--) {
+        for (int i = n; i >= 1; i--) {
+            u8 blk[16], b[16];
+            u8 t = (u8)(n * j + i);
+
+            memcpy(blk, a, 8);
+            blk[7] ^= t;                 /* A ^ (n*j + i), t fits one octet */
+            memcpy(blk + 8, r[i - 1], 8);
+            aes_decrypt_block(rk, blk, b);
+            memcpy(a, b, 8);
+            memcpy(r[i - 1], b + 8, 8);
+        }
+    }
+
+    if (memcmp(a, iv, 8) != 0)
+        return -1;
+    for (int i = 0; i < n; i++)
+        memcpy(out + i * 8, r[i], 8);
+    return n * 8;
+}

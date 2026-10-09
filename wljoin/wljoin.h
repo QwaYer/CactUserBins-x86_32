@@ -60,6 +60,12 @@ struct ap_info {
      * … bit11 = 54) and the CACT_WLAN_ERP_* timings. */
     u16 basic_rates;
     u16 erp_flags;
+    /* The AP's advertised rates in beacon order (IE 1 then IE 50), echoed back
+     * in the association request split 8/rest — mac80211's
+     * ieee80211_put_srates_elem() pair, so the request is not a superset of the
+     * AP's rates. */
+    u8  supp_rates[16];
+    u8  supp_rates_len;
 };
 
 /* ---- crypto (wpa.c) --------------------------------------------------- */
@@ -69,5 +75,9 @@ void wl_hmac_sha1(const u8 *key, u32 key_len, const u8 *msg, u32 msg_len,
                   u8 out[20]);
 void wl_prf512(const u8 *key, const char *label, const u8 *data, u32 data_len,
                u8 *out, u32 out_len);
+
+/* AES-Key-Unwrap (RFC 3394) of WPA2 key data with the KEK.  Returns the
+ * plaintext length, or -1 when the length or the integrity check fails. */
+int wl_aes_unwrap(const u8 kek[16], const u8 *in, int in_len, u8 *out);
 
 #endif /* WLJOIN_H */

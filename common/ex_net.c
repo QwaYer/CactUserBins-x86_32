@@ -718,7 +718,23 @@ int cact_ub_dns(char **argv, int argc) {
 /* Control goes through /dev/net (CACT_NETCTL_NETCFG / _GET).                */
 /* ────────────────────────────────────────────────────────────────────────── */
 
-#define IP_IFACE "eth0"
+/* The NIC name is whatever the driver registered ("eth0", "wlan0", ...): read
+ * it from the kernel (CACT_NETCTL_IFNAME), never hardcode it.  IP_IFACE_FALLBACK
+ * only covers the no-NIC case. */
+#define IP_IFACE_FALLBACK "eth0"
+
+static const char *ip_ifname(void) {
+    static char name[CACT_IFNAME_MAX];
+    static int  cached;
+
+    if (!cached) {
+        name[0] = '\0';
+        if (nio_dev_cmd("net", CACT_NETCTL_IFNAME, name) < 0 || name[0] == '\0')
+            strcpy(name, IP_IFACE_FALLBACK);
+        cached = 1;
+    }
+    return name;
+}
 
 static int ip_prefix_to_mask(int prefix, uint32_t *mask) {
     if (prefix < 0 || prefix > 32) return -1;
@@ -783,25 +799,29 @@ static int ip_set_cfg(const cact_netcfg_arg_t *a) {
     return 0;
 }
 
-static int ip_show_addr(cact_netcfg_get_t *g, int show_link_only) {
-    if (ip_get_cfg(g) < 0) return 1;
+/* Print one interface in `ip addr` / `ip link` style, from the indexed kernel
+ * view (CACT_NETCTL_IFACE_GET). */
+static void ip_show_one(const cact_iface_info_t *g, int show_link_only) {
+    char buf[20];
+    int is_lo = (g->flags & CACT_IFACE_FLAG_LOOPBACK) != 0;
+    const char *name = g->name[0] ? g->name : "?";
 
-    w(IP_IFACE);
+    w(name);
     w(": <");
     w(g->link_up ? "UP" : "DOWN");
     w("> mtu 1500\n");
 
-    w("    link/ether ");
-    if (g->link_up) {
-        ip_print_mac(g->mac);
+    if (is_lo) {
+        w("    link/loopback 00:00:00:00:00:00\n");
     } else {
-        w("00:00:00:00:00:00");
+        w("    link/ether ");
+        if (g->link_up) ip_print_mac(g->mac);
+        else w("00:00:00:00:00:00");
+        w("\n");
     }
-    w("\n");
 
-    if (show_link_only) return 0;
+    if (show_link_only) return;
 
-    char buf[20];
     if (g->ip_host && g->netmask_host) {
         int prefix = ip_mask_to_prefix(g->netmask_host);
         uint32_t bcast = (g->ip_host & g->netmask_host) | ~g->netmask_host;
@@ -814,18 +834,19 @@ static int ip_show_addr(cact_netcfg_get_t *g, int show_link_only) {
         w(" brd ");
         ip_fmt_ipv4(bcast, buf, sizeof(buf));
         w(buf);
-        w(" scope global ");
-        w(IP_IFACE);
+        w(" scope ");
+        w(is_lo ? "host " : "global ");
+        w(name);
         w("\n");
-        if (g->gateway_host) {
+        if (!is_lo && g->gateway_host) {
             w("    default via ");
             ip_fmt_ipv4(g->gateway_host, buf, sizeof(buf));
             w(buf);
             w(" dev ");
-            w(IP_IFACE);
+            w(name);
             w("\n");
         }
-        if (g->dns_host) {
+        if (!is_lo && g->dns_host) {
             w("    dns ");
             ip_fmt_ipv4(g->dns_host, buf, sizeof(buf));
             w(buf);
@@ -834,54 +855,79 @@ static int ip_show_addr(cact_netcfg_get_t *g, int show_link_only) {
     } else {
         w("    (no IPv4 address configured)\n");
     }
+}
+
+/* "dev IF" among the arguments, or NULL. */
+static const char *ip_opt_dev(char **argv, int argc) {
+    for (int i = 0; i < argc; i++)
+        if (strcmp(argv[i], "dev") == 0 && i + 1 < argc) return argv[i + 1];
+    return NULL;
+}
+
+/* Enumerate the kernel's interfaces; when `only` is set, print just that one and
+ * error if it does not exist. */
+static int ip_enum_dev(const char *only, int show_link_only) {
+    int count = (int)nio_dev_cmd("net", CACT_NETCTL_IFACE_COUNT, NULL);
+    if (count < 0) count = 0;
+    int printed = 0;
+    for (int i = 0; i < count; i++) {
+        cact_iface_get_arg_t a;
+        memset(&a, 0, sizeof(a));
+        a.index = (uint32_t)i;
+        if (nio_dev_cmd("net", CACT_NETCTL_IFACE_GET, &a) < 0) continue;
+        if (only && strcmp(a.info.name, only) != 0) continue;
+        if (printed++) w("\n");
+        ip_show_one(&a.info, show_link_only);
+    }
+    if (only && printed == 0) {
+        we("ip: unknown interface `");
+        we(only);
+        we("`\n");
+        return 1;
+    }
     return 0;
 }
 
-/* ip helpers: there is only one card (eth0), so "dev IF" is ignored when
- * parsing, but if a foreign card is named we complain. */
-static int ip_warn_foreign_dev(char **argv, int argc) {
-    for (int i = 0; i < argc; i++) {
-        if (strcmp(argv[i], "dev") == 0 && i + 1 < argc) {
-            if (strcmp(argv[i + 1], IP_IFACE) != 0) {
-                we("ip: unknown interface `");
-                we(argv[i + 1]);
-                we("` (only ");
-                we(IP_IFACE);
-                we(" exists)\n");
-                return 1;
-            }
-        }
+/* Configuration is applied to the one configurable interface (the NIC); a
+ * `dev IF` naming another interface (e.g. the fixed loopback) is refused. */
+static int ip_require_nic(char **argv, int argc) {
+    const char *dev = ip_opt_dev(argv, argc);
+    if (dev && strcmp(dev, ip_ifname()) != 0) {
+        we("ip: cannot configure `");
+        we(dev);
+        we("` (fixed; only ");
+        we(ip_ifname());
+        we(" is configurable)\n");
+        return 1;
     }
     return 0;
 }
 
 static int ip_cmd_addr_show(char **argv, int argc) {
-    if (ip_warn_foreign_dev(argv, argc)) return 1;
-    cact_netcfg_get_t g;
-    return ip_show_addr(&g, 0);
+    return ip_enum_dev(ip_opt_dev(argv, argc), 0);
 }
 
 static int ip_cmd_link_show(char **argv, int argc) {
-    if (ip_warn_foreign_dev(argv, argc)) return 1;
-    cact_netcfg_get_t g;
-    return ip_show_addr(&g, 1);
+    return ip_enum_dev(ip_opt_dev(argv, argc), 1);
 }
 
 static int ip_parse_addr_prefix(const char *s, uint32_t *ip, int *prefix) {
     char tmp[32];
-    int n = 0;
-    const char *slash = 0;
-    for (const char *p = s; *p && n < (int)sizeof(tmp) - 1; p++) {
-        if (*p == '/') slash = tmp + n;
-        tmp[n++] = *p;
-    }
-    tmp[n] = '\0';
+    const char *slash = strchr(s, '/');   /* a "/prefix" suffix is not part of the address */
+    size_t addr_len = slash ? (size_t)(slash - s) : strlen(s);
+
+    if (addr_len == 0 || addr_len >= sizeof(tmp)) return -1;
+    memcpy(tmp, s, addr_len);
+    tmp[addr_len] = '\0';
+
     uint32_t a;
     if (parse_ipv4(tmp, &a) < 0) return -1;
+
     int pre = 32;
     if (slash) {
+        if (slash[1] < '0' || slash[1] > '9') return -1;   /* "/" needs a prefix length */
         pre = atoi(slash + 1);
-        if (pre < 0 || pre > 32) return -1;
+        if (pre > 32) return -1;
     }
     *ip = a;
     *prefix = pre;
@@ -890,9 +936,10 @@ static int ip_parse_addr_prefix(const char *s, uint32_t *ip, int *prefix) {
 
 static int ip_cmd_addr_add(char **argv, int argc) {
     if (argc < 1) {
-        we("usage: ip addr add IP[/PREFIX] dev eth0\n");
+        we("usage: ip addr add IP[/PREFIX] dev IF\n");
         return 1;
     }
+    if (ip_require_nic(argv, argc)) return 1;
     uint32_t ip_h;
     int prefix;
     if (ip_parse_addr_prefix(argv[0], &ip_h, &prefix) < 0) {
@@ -917,9 +964,10 @@ static int ip_cmd_addr_add(char **argv, int argc) {
 
 static int ip_cmd_addr_del(char **argv, int argc) {
     if (argc < 1) {
-        we("usage: ip addr del IP[/PREFIX] dev eth0\n");
+        we("usage: ip addr del IP[/PREFIX] dev IF\n");
         return 1;
     }
+    if (ip_require_nic(argv, argc)) return 1;
     uint32_t ip_h;
     int prefix;
     if (ip_parse_addr_prefix(argv[0], &ip_h, &prefix) < 0) {
@@ -938,7 +986,7 @@ static int ip_cmd_addr_del(char **argv, int argc) {
 }
 
 static int ip_cmd_addr_flush(char **argv, int argc) {
-    (void)argv; (void)argc;
+    if (ip_require_nic(argv, argc)) return 1;
     cact_netcfg_arg_t a;
     a.ip_host       = 0;
     a.netmask_host  = 0;
@@ -957,11 +1005,11 @@ static int ip_cmd_route_show(char **argv, int argc) {
         ip_fmt_ipv4(g.gateway_host, buf, sizeof(buf));
         w(buf);
         w(" dev ");
-        w(IP_IFACE);
+        w(ip_ifname());
         w("\n");
     } else {
         w("default via <none> dev ");
-        w(IP_IFACE);
+        w(ip_ifname());
         w("\n");
     }
     return 0;
