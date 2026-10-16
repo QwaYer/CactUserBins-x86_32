@@ -27,6 +27,7 @@
 #include <signal.h>
 #include <stat.h>
 #include <errno.h>
+#include <termios.h>
 
 #define ROWS_MAX 64          /* most rows we will ever draw */
 #define COLS_MAX 220         /* widest line we will ever draw */
@@ -90,7 +91,33 @@ static const char usage[] =
 
 /* ------------------------------------------------------------------ utils */
 
+/* The console has a line discipline (ISIG|ICANON|ECHO by default), so the
+ * editor must switch its terminal to raw mode for per-key input: with ICANON
+ * on, keys are buffered until Enter and echoed, which makes arrow-key escape
+ * sequences show up as literal text.  ISIG is left on so the console still
+ * turns ^C/^\ into SIGINT/SIGQUIT (the editor handles them) and ^Z into a stop. */
+static struct termios ced_saved_tio;
+static int ced_raw_active;
+
+static void ced_raw_enter(void) {
+    struct termios raw;
+    if (tcgetattr(STDIN_FILENO, &ced_saved_tio) != 0) return;
+    raw = ced_saved_tio;
+    raw.c_lflag &= ~(unsigned int)(ICANON | ECHO | ECHOE | ECHOK | ECHONL);
+    raw.c_cc[VMIN]  = 1;
+    raw.c_cc[VTIME] = 0;
+    if (tcsetattr(STDIN_FILENO, TCSANOW, &raw) == 0) ced_raw_active = 1;
+}
+
+static void ced_raw_leave(void) {
+    if (ced_raw_active) {
+        tcsetattr(STDIN_FILENO, TCSANOW, &ced_saved_tio);
+        ced_raw_active = 0;
+    }
+}
+
 static void out_of_memory(void) {
+    ced_raw_leave();
     write(STDERR_FILENO, "ced: out of memory\n", 19);
     exit(1);
 }
@@ -1130,6 +1157,7 @@ int cact_ub_ced(char **argv, int argc) {
     cy = cx = want_cx = 0;
     top_line = top_seg = 0;
 
+    ced_raw_enter();
     write(STDOUT_FILENO, "\033[2J", 4);
     invalidate_rows();
     render();
@@ -1202,6 +1230,7 @@ int cact_ub_ced(char **argv, int argc) {
     }
 
 done:
+    ced_raw_leave();
     write(STDOUT_FILENO, "\033[2J\033[H", 7);
     return 0;
 }

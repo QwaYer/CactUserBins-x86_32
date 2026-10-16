@@ -3,7 +3,8 @@
  *
  *   head  tail  wc  sort  uniq  cut  tr  tee  seq  yes  printf
  *
- * All of them read through cact_ub_read_all(), so a regular file with a known
+ * Except head, which streams and stops at its count — it must not wait for EOF
+ * on a pipe — they read through cact_ub_read_all(): a regular file with a known
  * non-zero size is read up to its st_size, while a size-0 regular file (procfs
  * virtual file) or a pipe/device is read to EOF.  Option syntax follows the
  * GNU tools closely enough for scripts: "-n N", "-nN", "--help".
@@ -83,22 +84,43 @@ static const char head_usage[] =
     "usage: head [-n N] [-c N] [FILE...]\n"
     "Print the first 10 lines (or N lines / N bytes) of each FILE.\n";
 
-static void head_lines(const char *buf, size_t len, long n) {
-    size_t i = 0;
-    long cnt = 0;
-    while (i < len && cnt < n) {
-        size_t start = i;
-        while (i < len && buf[i] != '\n') i++;
-        if (i < len) i++;
-        cact_ub_write_all(STDOUT_FILENO, buf + start, i - start);
-        cnt++;
-    }
-}
+/* Stream at most `n` lines (or `n` bytes) from `fd` to stdout and return
+ * without draining the rest.  head must stop at the requested count, not at
+ * EOF: reading the whole input first (as cact_ub_read_all does) never returns
+ * for a producer that stays open, so `yes | head -n 1` hung forever.
+ * Returns 0, or -1 if the first read failed. */
+static int head_stream(int fd, long n, int by_bytes) {
+    char buf[4096];
 
-static void head_bytes(const char *buf, size_t len, long n) {
-    if (n <= 0) return;
-    size_t take = (size_t)n < len ? (size_t)n : len;
-    cact_ub_write_all(STDOUT_FILENO, buf, take);
+    if (n <= 0) return 0;
+
+    long lines = 0;
+    long bytes_left = n;
+
+    for (;;) {
+        ssize_t r = read(fd, buf, sizeof(buf));
+        if (r < 0) return -1;
+        if (r == 0) return 0;
+
+        if (by_bytes) {
+            size_t take = (size_t)r < (size_t)bytes_left ? (size_t)r
+                                                        : (size_t)bytes_left;
+            cact_ub_write_all(STDOUT_FILENO, buf, take);
+            bytes_left -= (long)take;
+            if (bytes_left <= 0) return 0;
+            continue;
+        }
+
+        size_t start = 0;
+        for (size_t i = 0; i < (size_t)r; i++) {
+            if (buf[i] != '\n') continue;
+            cact_ub_write_all(STDOUT_FILENO, buf + start, i - start + 1);
+            start = i + 1;
+            if (++lines >= n) return 0;
+        }
+        if (start < (size_t)r)
+            cact_ub_write_all(STDOUT_FILENO, buf + start, (size_t)r - start);
+    }
 }
 
 int cact_ub_head(char **argv, int argc) {
@@ -134,26 +156,22 @@ int cact_ub_head(char **argv, int argc) {
     int nfiles = argc - i;
     int ret = 0, firstfile = 1;
     if (nfiles == 0) {
-        size_t len = 0;
-        char *buf = cact_ub_read_all(NULL, &len);
-        if (!buf) return 1;
-        if (by_bytes) head_bytes(buf, len, count);
-        else head_lines(buf, len, count);
-        free(buf);
+        if (head_stream(STDIN_FILENO, count, by_bytes) < 0) return 1;
         return 0;
     }
     for (; i < argc; i++) {
-        size_t len = 0;
-        char *buf = cact_ub_read_all(argv[i], &len);
-        if (!buf) { fprintf(stderr, "head: %s: cannot open\n", argv[i]); ret = 1; continue; }
+        int fd = open(argv[i], O_RDONLY, 0);
+        if (fd < 0) { fprintf(stderr, "head: %s: cannot open\n", argv[i]); ret = 1; continue; }
         if (nfiles > 1) {
             if (!firstfile) write(STDOUT_FILENO, "\n", 1);
             printf("==> %s <==\n", argv[i]);
         }
         firstfile = 0;
-        if (by_bytes) head_bytes(buf, len, count);
-        else head_lines(buf, len, count);
-        free(buf);
+        if (head_stream(fd, count, by_bytes) < 0) {
+            fprintf(stderr, "head: %s: read error\n", argv[i]);
+            ret = 1;
+        }
+        close(fd);
     }
     return ret;
 }

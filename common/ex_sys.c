@@ -7,6 +7,7 @@
  */
 
 #include "version.h"
+#include "common/ex_util.h"
 
 #include <unistd.h>
 #include <stdlib.h>
@@ -126,7 +127,8 @@ static int map_sig(int n) {
 }
 
 static const char kill_usage[] =
-    "usage: kill [-SIG] PID...\n"
+    "usage: kill [-SIG] { PID | %JOB }...\n"
+    "  %N / %% name a job from `jobs`; its whole process group is signalled.\n"
     "  -1 SIGKILL  -2 SIGTERM  -9 SIGKILL(posix)  -15 SIGTERM(posix)\n";
 
 int cact_ub_kill(char **argv, int argc) {
@@ -146,7 +148,27 @@ int cact_ub_kill(char **argv, int argc) {
     }
     int i, ret = 0;
     for (i = start; i < argc; i++) {
+        if (argv[i][0] == '%') {
+            /* A job is a process group the shell tracks; only cactsole can
+             * signal it, so ask it over the control channel.  %%, %+ and a
+             * bare % all mean the current job (n = 0 lets the shell decide). */
+            const char *spec = argv[i] + 1;
+            int n = 0;
+            if (*spec && *spec != '%' && *spec != '+') n = atoi(spec);
+            char req[64];
+            snprintf(req, sizeof(req), "kill\t%d\t%d", sig, n);
+            if (cact_ub_shell_ctl(req) != 0) {
+                fprintf(stderr, "kill: %s: no shell control channel\n", argv[i]);
+                ret = 1;
+            }
+            continue;
+        }
         pid_t pid = (pid_t)atoi(argv[i]);
+        if (pid <= 0) {
+            fprintf(stderr, "kill: %s: invalid pid\n", argv[i]);
+            ret = 1;
+            continue;
+        }
         if (kill(pid, sig) != 0) {
             write(STDERR_FILENO, "kill: ", 6);
             write(STDERR_FILENO, argv[i], strlen(argv[i]));

@@ -52,9 +52,29 @@ static int cp_entry(const char *full, const char *name, void *ud) {
 static int cp_tree(const char *src, const char *dst, int recursive,
                    int force, int verbose) {
     struct stat st;
-    if (stat(src, &st) != 0) {
+    /* -r/-R reproduces a symlink as a link and never descends through it, so
+     * its classification is lstat-based; a plain `cp src dst` dereferences
+     * (GNU), so that case keeps stat. */
+    int ok = recursive ? (lstat(src, &st) == 0) : (stat(src, &st) == 0);
+    if (!ok) {
         fprintf(stderr, "cp: %s: cannot stat\n", src);
         return -1;
+    }
+
+    if (recursive && S_ISLNK(st.st_mode)) {
+        char target[512];
+        ssize_t l = readlink(src, target, sizeof(target) - 1);
+        if (l < 0) {
+            fprintf(stderr, "cp: %s: cannot read link\n", src);
+            return -1;
+        }
+        target[l] = '\0';
+        if (symlink(target, dst) != 0) {
+            fprintf(stderr, "cp: %s -> %s: cannot create link\n", src, dst);
+            return -1;
+        }
+        if (verbose) printf("%s -> %s\n", src, dst);
+        return 0;
     }
 
     if (S_ISDIR(st.st_mode)) {

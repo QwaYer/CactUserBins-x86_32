@@ -41,20 +41,37 @@ static const char ls_usage[] =
     "  -l long format (mode, size, name)   -a include dot files\n"
     "  -h human-readable sizes (with -l)\n";
 
+/* Fill `st` with the entry's *own* metadata and, for a symlink, point `*target`
+ * at its target text (in `tbuf`).  ls shows the link, never what it points at:
+ * stat() follows a final symlink, lstat() does not. */
+static int ls_lstat(const char *path, struct stat *st,
+                    char *tbuf, size_t tsz, const char **target) {
+    *target = NULL;
+    if (lstat(path, st) != 0) return -1;
+    if (S_ISLNK(st->st_mode)) {
+        ssize_t n = readlink(path, tbuf, tsz - 1);
+        if (n >= 0) { tbuf[n] = '\0'; *target = tbuf; }
+    }
+    return 0;
+}
+
 static void ls_print(const char *name, const struct stat *st,
-                     int long_fmt, int human) {
+                     int long_fmt, int human, const char *target) {
     if (!long_fmt) {
         printf("%s\n", name);
         return;
     }
     char perm[11];
+    char suffix[520];
     mode_string(st->st_mode, perm);
+    suffix[0] = '\0';
+    if (target) snprintf(suffix, sizeof(suffix), " -> %s", target);
     if (human) {
         char hs[16];
         cact_ub_human_size(st->st_size, hs, sizeof(hs));
-        printf("%s %8s %s\n", perm, hs, name);
+        printf("%s %8s %s%s\n", perm, hs, name, suffix);
     } else {
-        printf("%s %8u %s\n", perm, (unsigned)st->st_size, name);
+        printf("%s %8u %s%s\n", perm, (unsigned)st->st_size, name, suffix);
     }
 }
 
@@ -72,11 +89,12 @@ static int ls_one(const char *full, const char *name, void *ud) {
         return 0;
     }
     struct stat st;
-    if (stat(full, &st) != 0) {
-        st.st_mode = 0;
-        st.st_size = 0;
+    char tbuf[512];
+    const char *tgt = NULL;
+    if (ls_lstat(full, &st, tbuf, sizeof(tbuf), &tgt) != 0) {
+        st.st_ino = st.st_mode = st.st_size = st.st_type = 0;
     }
-    ls_print(name, &st, 1, c->human);
+    ls_print(name, &st, 1, c->human, tgt);
     return 0;
 }
 
@@ -116,12 +134,17 @@ int cact_ub_ls(char **argv, int argc) {
     for (int k = i; k < argc; k++) {
         const char *path = argv[k];
         struct stat st;
-        if (stat(path, &st) != 0) {
-            fprintf(stderr, "ls: %s: cannot open\n", path);
-            ret = 1;
-            continue;
+        int have = (stat(path, &st) == 0);
+        if (!have) {
+            /* stat() follows symlinks, so a *dangling* link fails it while
+             * lstat() still sees the link — and the link is what ls prints. */
+            if (lstat(path, &st) != 0) {
+                fprintf(stderr, "ls: %s: cannot open\n", path);
+                ret = 1;
+                continue;
+            }
         }
-        if (S_ISDIR(st.st_mode)) {
+        if (have && S_ISDIR(st.st_mode)) {
             if (multi) {
                 if (k > i) write(STDOUT_FILENO, "\n", 1);
                 printf("%s:\n", path);
@@ -132,7 +155,13 @@ int cact_ub_ls(char **argv, int argc) {
                 ret = 1;
             }
         } else {
-            ls_print(path, &st, long_fmt, human);
+            /* Not a directory: show the entry itself.  lstat, so `ls -l link`
+             * prints the link and its target rather than the target's stats. */
+            struct stat lst;
+            char tbuf[512];
+            const char *tgt = NULL;
+            if (ls_lstat(path, &lst, tbuf, sizeof(tbuf), &tgt) == 0) st = lst;
+            ls_print(path, &st, long_fmt, human, tgt);
         }
     }
     return ret;
@@ -444,9 +473,26 @@ static int mv_one(const char *src, const char *dst) {
     if (rename(src, dst) == 0) return 0;
 
     struct stat st;
-    if (stat(src, &st) != 0) {
+    /* lstat: mv moves the link itself, never what it points at. */
+    if (lstat(src, &st) != 0) {
         fprintf(stderr, "mv: %s: not found\n", src);
         return -1;
+    }
+    if (S_ISLNK(st.st_mode)) {
+        /* Cross-filesystem: recreate the link instead of copying its target. */
+        char target[512];
+        ssize_t l = readlink(src, target, sizeof(target) - 1);
+        if (l < 0) {
+            fprintf(stderr, "mv: %s: cannot read link\n", src);
+            return -1;
+        }
+        target[l] = '\0';
+        if (symlink(target, dst) != 0) {
+            fprintf(stderr, "mv: %s -> %s: cannot create link\n", src, dst);
+            return -1;
+        }
+        unlink(src);
+        return 0;
     }
     if (S_ISDIR(st.st_mode)) {
         fprintf(stderr, "mv: %s: cannot move a directory across filesystems\n", src);

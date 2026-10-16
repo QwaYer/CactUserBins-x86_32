@@ -1125,6 +1125,134 @@ int cact_ub_ip(char **argv, int argc) {
 }
 
 /* ────────────────────────────────────────────────────────────────────────── */
+/*  arp  — the kernel ARP / IPv4 neighbor table.                              */
+/*                                                                           */
+/*    arp [-a] [-n] [-v] [-i IF]                                             */
+/*                                                                           */
+/*  Reads the table the kernel learns from ARP traffic (CACT_NETCTL_ARP_*).   */
+/* ────────────────────────────────────────────────────────────────────────── */
+
+static void arp_fmt_mac(const uint8_t *mac, char *out) {
+    static const char hex[] = "0123456789abcdef";
+    int n = 0;
+    for (int i = 0; i < 6; i++) {
+        out[n++] = hex[mac[i] >> 4];
+        out[n++] = hex[mac[i] & 0xF];
+        if (i < 5) out[n++] = ':';
+    }
+    out[n] = '\0';
+}
+
+static void arp_wpad(const char *s, int width) {
+    int n = (int)strlen((char *)s);
+    w(s);
+    for (int i = n; i < width; i++) w(" ");
+}
+
+static const char arp_usage[] =
+    "usage: arp [-a] [-n] [-v] [-i IF]\n"
+    "  print the kernel ARP (IPv4 neighbor) table\n"
+    "    -a       BSD output: `? (IP) at MAC [ether] on IF`\n"
+    "    -n       numeric only (there is no resolver; this is the default)\n"
+    "    -v       append the entry's age in seconds\n"
+    "    -i IF    show only the entries on interface IF\n";
+
+int cact_ub_arp(char **argv, int argc) {
+    int bsd = 0, verbose = 0;
+    const char *only = NULL;
+
+    for (int i = 1; i < argc; i++) {
+        const char *a = argv[i];
+        if (strcmp(a, "--help") == 0) {
+            w(arp_usage);
+            return 0;
+        }
+        if (a[0] != '-' || a[1] == '\0') {
+            we("arp: unexpected argument `");
+            we(a);
+            we("`\n");
+            we(arp_usage);
+            return 1;
+        }
+        for (int j = 1; a[j]; j++) {
+            if (a[j] == 'i') {
+                if (a[j + 1]) {
+                    only = &a[j + 1];
+                } else if (i + 1 < argc) {
+                    only = argv[++i];
+                } else {
+                    we("arp: -i needs an interface\n");
+                    return 1;
+                }
+                break;   /* the rest of this token was the interface name */
+            }
+            if (a[j] == 'a') {
+                bsd = 1;
+            } else if (a[j] == 'v') {
+                verbose = 1;
+            } else if (a[j] == 'n') {
+                /* always numeric: there is no resolver */
+            } else {
+                char bad[2] = { a[j], '\0' };
+                we("arp: unknown option `-");
+                we(bad);
+                we("`\n");
+                we(arp_usage);
+                return 1;
+            }
+        }
+    }
+
+    int count = (int)nio_dev_cmd("net", CACT_NETCTL_ARP_COUNT, NULL);
+    if (count < 0) count = 0;
+
+    char ipbuf[20], macbuf[20];
+    if (!bsd) {
+        arp_wpad("Address", 24);
+        arp_wpad("HWtype", 8);
+        arp_wpad("HWaddress", 20);
+        arp_wpad("Flags", 6);
+        arp_wpad("Mask", 16);
+        w("Iface\n");
+    }
+
+    for (int i = 0; i < count; i++) {
+        cact_arp_get_arg_t a;
+        memset(&a, 0, sizeof(a));
+        a.index = (uint32_t)i;
+        if (nio_dev_cmd("net", CACT_NETCTL_ARP_GET, &a) < 0) continue;
+        if (only && strcmp(only, ip_ifname()) != 0) continue;
+
+        ip_fmt_ipv4(a.entry.ip_host, ipbuf, sizeof(ipbuf));
+        arp_fmt_mac(a.entry.mac, macbuf);
+
+        if (bsd) {
+            w("? (");
+            w(ipbuf);
+            w(") at ");
+            w(macbuf);
+            w(" [ether] on ");
+            w(ip_ifname());
+            if (verbose) {
+                w("  age ");
+                wn((int)(a.entry.age_ms / 1000));
+                w("s");
+            }
+            w("\n");
+        } else {
+            arp_wpad(ipbuf, 24);
+            arp_wpad("ether", 8);
+            arp_wpad(macbuf, 20);
+            arp_wpad("C", 6);
+            arp_wpad("", 16);
+            w(ip_ifname());
+            w("\n");
+        }
+    }
+    return 0;
+}
+
+/* ────────────────────────────────────────────────────────────────────────── */
 /*  nc  — simple netcat: bidirectional relay stdin <-> socket.                */
 /*                                                                           */
 /*    nc HOST PORT            — TCP client (connect and relay)               */

@@ -1,19 +1,15 @@
 /*
- * wljoin — Wi-Fi connection utility for CactOS.
+ * wljoin — WPA2 supplicant for CactOS.
  *
- * The rt2800usb driver is a dumb radio (/dev/wlan0): it moves raw 802.11 frames
- * and runs the datapath with keys it is given.  Everything that establishes a
- * connection lives here:
- *
- *   scan   — walk channels, send probe requests, collect beacons / probe
- *            responses and parse SSID / channel / RSN / privacy;
- *   join   — open-system auth, association, then (for a WPA2 AP) the 4-way
- *            handshake, and finally install the pairwise key and bring the
- *            datapath up.
+ * The 802.11 station engine lives in the kernel (/dev/wlan0, cact80211): scan,
+ * open-system auth/association and the 802.11<->802.3 datapath with CCMP.  This
+ * utility is the supplicant: it reads the scan list, asks the kernel to join a
+ * BSS, runs the WPA2 4-way handshake over EAPOL and installs the keys.
  *
  *   wljoin                  scan and list access points
  *   wljoin <ssid> <pass>    connect (empty/missing pass = open network)
  *   wljoin --selftest       verify the WPA2 crypto vectors
+ *   wljoin --status         print the link state and datapath counters
  */
 
 #include <stdio.h>
@@ -26,18 +22,17 @@
 #include "wljoin.h"
 #include "wlan.h"
 
+/* Bring-up trace: the last line printed names the step the tool is in when it
+ * wedges.  A trailing newline plus fflush forces it out before a blocking ioctl
+ * (the kernel console interleaves its own "wl: ..." lines). */
+#define WL_TRACE(...) do { printf("wljoin: " __VA_ARGS__); fflush(stdout); } while (0)
+
 /* ------------------------------------------------------------------ */
 /* state                                                               */
 /* ------------------------------------------------------------------ */
 
 static int wl_fd = -1;
 static u8  our_mac[6];
-
-static struct ap_info aps[MAX_AP];
-static int ap_count;
-
-static int auth_ok;
-static int assoc_ok;
 
 /* Connection target and 4-way handshake state. */
 static u8  cur_bssid[6];
@@ -60,9 +55,7 @@ static u8  gtk[32];
 static int gtk_len;
 static u8  gtk_id;
 
-static u8  rxbuf[CACT_WLAN_FRAME_MAX];
-
-/* The driver reports failures as an ioctl errno (the RT_E* codes in
+/* The engine reports failures as an ioctl errno (the RT_E* codes in
  * rt2800_local.h) and prints nothing itself; name the ones that matter. */
 static const char *wl_error(void) {
     switch (errno) {
@@ -70,391 +63,37 @@ static const char *wl_error(void) {
     case ETIMEDOUT: return "the radio reported no result";
     case EIO:       return "radio I/O error (driver or dongle down?)";
     case ENODEV:    return "the device is not usable";
+    case ENOENT:    return "no such BSS (rescan?)";
     case EINVAL:    return "the request was rejected";
     case EFAULT:    return "bad buffer";
     case ENOMEM:    return "out of memory";
+    case EAGAIN:    return "not associated yet";
     }
     return "failed";
 }
 
 /* ------------------------------------------------------------------ */
-/* raw frame I/O                                                       */
+/* EAPOL transport                                                     */
 /* ------------------------------------------------------------------ */
 
-static int tx_frame(const u8 *f, int len) {
-    return wl_tx(wl_fd, f, (u32)len);
+static int tx_eapol(const u8 *eapol, int len) {
+    return wl_eapol_tx(wl_fd, cur_bssid, eapol, (u32)len);
 }
 
-static void handle_rx(const u8 *f, int len);
-static void scan_frame(const u8 *f, int len);
-static void wpa_rx(const u8 *eapol, int len);
+/* Fetch at most one EAPOL payload and process it.  Returns 1 when one arrived,
+ * 0 when the radio was idle for one poll (the engine's EAPOL_RX ioctl drives a
+ * bulk-IN that times out after ~20 ms, so an idle poll is a real wait). */
+static void wpa_rx(const u8 *e, int len);
 
-/* Pull at most one frame and dispatch it.  Returns 1 when a frame arrived, 0
- * when the radio was idle for one poll — the driver's RX ioctl performs a
- * bulk-IN that times out after RT_RX_TIMEOUT_MS (~20 ms), so an idle poll is a
- * real wait and the missed-poll count doubles as the dwell timer. */
 static int rx_one(void) {
+    u8  buf[CACT_WLAN_EAPOL_MAX];
     u32 n = 0;
 
-    if (wl_rx(wl_fd, rxbuf, &n) == 1 && n > 0) {
-        handle_rx(rxbuf, (int)n);
+    if (wl_eapol_rx(wl_fd, buf, &n, 0) == 1 && n > 0) {
+        wpa_rx(buf, (int)n);
         return 1;
     }
     return 0;
-}
-
-/* Throw away whatever the channel walk left queued.  A stale auth/assoc
- * response from an earlier attempt must not set the success flags before this
- * attempt has sent anything, and the scan's backlog must not surface later.
- * Bounded: an AP's channel keeps producing beacons, so stop after a fixed
- * number of frames rather than waiting for silence that never comes. */
-static void drain_rx(void) {
-    u32 n;
-
-    for (int i = 0; i < 32; i++) {
-        n = 0;
-        if (wl_rx(wl_fd, rxbuf, &n) != 1 || n == 0)
-            break;
-    }
-}
-
-/* ------------------------------------------------------------------ */
-/* 802.11 management frames                                            */
-/* ------------------------------------------------------------------ */
-
-static int send_probe_request(void) {
-    u8 f[64];
-    int n = 0;
-
-    f[n++] = 0x40; f[n++] = 0x00;        /* probe request */
-    f[n++] = 0x00; f[n++] = 0x00;        /* duration */
-    memset(f + n, 0xff, 6); n += 6;      /* DA broadcast */
-    memcpy(f + n, our_mac, 6); n += 6;   /* SA */
-    memset(f + n, 0xff, 6); n += 6;      /* BSSID broadcast */
-    f[n++] = 0x00; f[n++] = 0x00;        /* seq */
-    f[n++] = 0;    f[n++] = 0;           /* SSID: wildcard */
-    f[n++] = 1;    f[n++] = 4;           /* supported rates */
-    f[n++] = 0x82; f[n++] = 0x84; f[n++] = 0x8b; f[n++] = 0x96;
-
-    return tx_frame(f, n);
-}
-
-static int send_auth(const u8 *bssid) {
-    u8 f[32];
-    int n = 0;
-
-    f[n++] = 0xb0; f[n++] = 0x00;        /* auth, management */
-    f[n++] = 0x00; f[n++] = 0x00;
-    memcpy(f + n, bssid, 6); n += 6;     /* DA */
-    memcpy(f + n, our_mac, 6); n += 6;   /* SA */
-    memcpy(f + n, bssid, 6); n += 6;     /* BSSID */
-    f[n++] = 0x00; f[n++] = 0x00;        /* seq */
-    f[n++] = 0x00; f[n++] = 0x00;        /* algorithm: open */
-    f[n++] = 0x01; f[n++] = 0x00;        /* transaction seq 1 */
-    f[n++] = 0x00; f[n++] = 0x00;        /* status 0 */
-
-    return tx_frame(f, n);
-}
-
-static int send_assoc(const struct ap_info *ap) {
-    static const u8 fallback_rates[4] = { 0x82, 0x84, 0x8b, 0x96 };
-    u8 f[256];
-    u16 capab = 0x0001;                  /* capability: ESS */
-    const u8 *rates;
-    u8 rates_len;
-    int n = 0;
-
-    /* An RSN (WPA2) STA sets the Privacy bit in its association request, as
-     * mac80211 does when the BSS capability carries WLAN_CAPABILITY_PRIVACY. */
-    if (ap->privacy)
-        capab |= 0x0010;
-
-    f[n++] = 0x00; f[n++] = 0x00;        /* assoc request */
-    f[n++] = 0x00; f[n++] = 0x00;
-    memcpy(f + n, ap->bssid, 6); n += 6; /* DA */
-    memcpy(f + n, our_mac, 6);   n += 6; /* SA */
-    memcpy(f + n, ap->bssid, 6); n += 6; /* BSSID */
-    f[n++] = 0x00; f[n++] = 0x00;        /* seq */
-    f[n++] = (u8)capab; f[n++] = (u8)(capab >> 8);
-    f[n++] = 10;   f[n++] = 0x00;        /* listen interval */
-    f[n++] = 0;    f[n++] = ap->ssid_len;
-    memcpy(f + n, ap->ssid, ap->ssid_len); n += ap->ssid_len;
-
-    /* Rates: echo the AP's own advertised set — IE 1 with the first up to eight,
-     * then IE 50 with the rest, exactly the pair mac80211 emits
-     * (ieee80211_put_srates_elem).  Some APs reject a request that advertises a
-     * superset of their rates. */
-    if (ap->supp_rates_len) {
-        rates = ap->supp_rates;
-        rates_len = ap->supp_rates_len;
-    } else {
-        rates = fallback_rates;
-        rates_len = (u8)sizeof(fallback_rates);
-    }
-    u8 first = rates_len > 8 ? 8 : rates_len;
-    f[n++] = 1;  f[n++] = first;
-    memcpy(f + n, rates, first); n += first;
-    if (rates_len > first) {
-        f[n++] = 50; f[n++] = (u8)(rates_len - first);
-        memcpy(f + n, rates + first, rates_len - first); n += rates_len - first;
-    }
-
-    /* RSN IE: an association request to a WPA2 (privacy) BSS must carry it —
-     * without one hostapd rejects the station before the 4-way handshake, and
-     * the status is a generic denial (not the rates code).  The STA echoes the
-     * AP's RSNE, the same bytes the handshake later re-uses. */
-    if (ap->privacy && cur_rsn_len) {
-        f[n++] = 48; f[n++] = cur_rsn_len;
-        memcpy(f + n, cur_rsn, cur_rsn_len); n += cur_rsn_len;
-    }
-
-    return tx_frame(f, n);
-}
-
-/* Wrap an EAPOL frame in an 802.11 data frame (ToDS) + LLC/SNAP and send it. */
-static int tx_eapol(const u8 *eapol, int len) {
-    u8 f[1600];
-    int n = 0;
-
-    if (len > (int)sizeof(f) - 32)
-        return -1;
-
-    f[n++] = 0x08; f[n++] = 0x01;          /* data, ToDS */
-    f[n++] = 0x00; f[n++] = 0x00;
-    memcpy(f + n, cur_bssid, 6); n += 6;   /* Addr1: BSSID */
-    memcpy(f + n, our_mac, 6);   n += 6;   /* Addr2: us */
-    memcpy(f + n, cur_bssid, 6); n += 6;   /* Addr3: DA = AP */
-    f[n++] = 0x00; f[n++] = 0x00;          /* seq */
-    f[n++] = 0xaa; f[n++] = 0xaa; f[n++] = 0x03;
-    f[n++] = 0x00; f[n++] = 0x00; f[n++] = 0x00;
-    f[n++] = 0x88; f[n++] = 0x8e;          /* ethertype EAPOL */
-    memcpy(f + n, eapol, len); n += len;
-
-    return tx_frame(f, n);
-}
-
-/* ------------------------------------------------------------------ */
-/* RX dispatch                                                         */
-/* ------------------------------------------------------------------ */
-
-static void handle_rx(const u8 *f, int len) {
-    u8 type, sub;
-
-    if (len < 24)
-        return;
-
-    type = (u8)((f[0] >> 2) & 0x3);
-
-    if (type == 0) {                       /* management */
-        sub = (u8)((f[0] >> 4) & 0xf);
-
-        if (sub == 11 && len >= 30) {
-            u16 status = (u16)(f[28] | (f[29] << 8));
-            printf("auth rx: status=%u\n", status);
-            if (status == 0)
-                auth_ok = 1;
-            return;
-        }
-        if (sub == 1 && len >= 30) {
-            u16 status = (u16)(f[26] | (f[27] << 8));
-            printf("assoc rx: status=%u\n", status);
-            if (status == 0)
-                assoc_ok = 1;
-            return;
-        }
-        if (sub == 12 || sub == 10) {
-            u16 reason = (u16)(f[24] | (f[25] << 8));
-            printf("%s from AP: reason=%u\n",
-                   sub == 12 ? "deauth" : "disassoc", reason);
-            return;
-        }
-        if (sub == 8 || sub == 5)
-            scan_frame(f, len);
-        return;
-    }
-
-    if (type == 2) {                       /* data: EAPOL belongs to us */
-        u8 dsub;
-        int hdr;
-        const u8 *llc;
-
-        if (!(f[1] & 0x02))                /* FromDS only */
-            return;
-        dsub = (u8)((f[0] >> 4) & 0xf);
-        hdr = (dsub & 0x8) ? DOT11_QOS_HDR : DOT11_HDR;
-        if (len < hdr + LLC_SNAP_LEN)
-            return;
-        llc = f + hdr;
-        if (llc[0] == 0xaa && llc[1] == 0xaa && llc[2] == 0x03 &&
-            llc[6] == 0x88 && llc[7] == 0x8e)
-            wpa_rx(llc + LLC_SNAP_LEN, len - hdr - LLC_SNAP_LEN);
-    }
-}
-
-/* ------------------------------------------------------------------ */
-/* scan                                                                */
-/* ------------------------------------------------------------------ */
-
-/* Rate bitmap index of an 802.11 "supported rates" element byte (the low seven
- * bits are the rate in units of 0.5 Mbit/s): 0..3 are CCK 1/2/5.5/11, 4..11 the
- * OFDM rates 6..54.  -1 for anything the driver cannot send. */
-static int rate_bit(u8 half_mbit) {
-    switch (half_mbit) {
-    case 2:   return 0;
-    case 4:   return 1;
-    case 11:  return 2;
-    case 22:  return 3;
-    case 12:  return 4;
-    case 18:  return 5;
-    case 24:  return 6;
-    case 36:  return 7;
-    case 48:  return 8;
-    case 72:  return 9;
-    case 96:  return 10;
-    case 108: return 11;
-    }
-    return -1;
-}
-
-static void scan_frame(const u8 *f, int len) {
-    const u8 *bssid;
-    const u8 *ssid = NULL;
-    const u8 *rsn = NULL;
-    u8 ssid_len = 0, rsn_len = 0, channel = 0, privacy;
-    u16 basic = 0, erp = 0;
-    u8 rates[16];
-    u8 rates_len = 0;
-    int off;
-
-    if (len < 24 + 12)
-        return;
-
-    bssid = f + 16;
-    privacy = (u8)((f[34] & 0x10) != 0);
-    off = 24 + 12;
-
-    while (off + 2 <= len) {
-        u8 id = f[off];
-        u8 ilen = f[off + 1];
-        if (off + 2 + ilen > len)
-            break;
-        if (id == 0) {
-            ssid = f + off + 2;
-            ssid_len = ilen;
-        } else if (id == 1 || id == 50) {
-            /* Supported rates (bit 7 marks a basic rate) and the extended set,
-             * which never marks basic rates.  Keep the bytes too: the
-             * association request echoes the AP's own rates in the same order. */
-            for (int k = 0; k < ilen; k++) {
-                u8 b = f[off + 2 + k];
-                int bit = rate_bit((u8)(b & 0x7f));
-                if (bit >= 0 && id == 1 && (b & 0x80))
-                    basic |= (u16)(1u << bit);
-                if (rates_len < (u8)sizeof(rates))
-                    rates[rates_len++] = b;
-            }
-        } else if (id == 3 && ilen >= 1) {
-            channel = f[off + 2];
-        } else if (id == 42 && ilen >= 1) {
-            /* ERP information: protection, short preamble, short slot. */
-            u8 e = f[off + 2];
-            if (e & 0x02) erp |= CACT_WLAN_ERP_CTS_PROT;
-            if (e & 0x04) erp |= CACT_WLAN_ERP_SHORT_PREAMBLE;
-            if (e & 0x08) erp |= CACT_WLAN_ERP_SHORT_SLOT;
-        } else if (id == 48) {
-            rsn = f + off + 2;
-            rsn_len = ilen;
-        }
-        off += 2 + ilen;
-    }
-    if (!ssid)
-        return;
-    if (ssid_len > 32)
-        ssid_len = 32;
-    if (rsn_len > 64)
-        rsn_len = 64;
-
-    for (int i = 0; i < ap_count; i++) {
-        if (memcmp(aps[i].bssid, bssid, 6) == 0) {
-            if (channel)
-                aps[i].channel = channel;
-            aps[i].privacy = privacy;
-            if (basic)
-                aps[i].basic_rates = basic;
-            aps[i].erp_flags = erp;
-            if (rates_len) {
-                memcpy(aps[i].supp_rates, rates, rates_len);
-                aps[i].supp_rates_len = rates_len;
-            }
-            /* Do not let a hidden-SSID sighting pin the entry to an empty
-             * name: a later frame with the real SSID fills it in. */
-            if (aps[i].ssid_len == 0 && ssid_len > 0) {
-                memcpy(aps[i].ssid, ssid, ssid_len);
-                aps[i].ssid[ssid_len] = 0;
-                aps[i].ssid_len = ssid_len;
-            }
-            if (rsn_len) {
-                memcpy(aps[i].rsn, rsn, rsn_len);
-                aps[i].rsn_len = rsn_len;
-            }
-            return;
-        }
-    }
-    if (ap_count >= MAX_AP)
-        return;
-
-    struct ap_info *a = &aps[ap_count++];
-    memset(a, 0, sizeof(*a));
-    memcpy(a->bssid, bssid, 6);
-    memcpy(a->ssid, ssid, ssid_len);
-    a->ssid_len = ssid_len;
-    a->channel = channel ? channel : 1;
-    a->privacy = privacy;
-    a->basic_rates = basic;
-    a->erp_flags = erp;
-    memcpy(a->supp_rates, rates, rates_len);
-    a->supp_rates_len = rates_len;
-    if (rsn_len) {
-        memcpy(a->rsn, rsn, rsn_len);
-        a->rsn_len = rsn_len;
-    }
-}
-
-static int do_scan(void) {
-    ap_count = 0;
-    int radio_failed = 0;
-
-    /* Walk the channels and leave each once it has gone quiet.  The missed-poll
-     * counter is the dwell timer: an idle poll blocks for ~20 ms in the driver,
-     * so a channel with nothing on it costs SCAN_QUIET_POLLS * 20 ms (~100 ms)
-     * and a channel with APs is dwelled only while beacons keep arriving, up to
-     * SCAN_POLLS_MAX.  Re-asking rescues an AP that ignored the first probe. */
-    for (int ch = 1; ch <= 13; ch++) {
-        if (wl_set_channel(wl_fd, (u32)ch) != 0) {
-            printf("cannot set channel %d: %s\n", ch, wl_error());
-            return -1;
-        }
-        /* A broadcast probe request waits for no acknowledgement, so a failure
-         * here is the radio itself; report it once and keep listening for
-         * beacons. */
-        if (send_probe_request() != 0 && !radio_failed) {
-            radio_failed = 1;
-            printf("probe request failed: %s\n", wl_error());
-        }
-
-        int quiet = 0, probes = 1;
-        for (int i = 0; i < SCAN_POLLS_MAX && quiet < SCAN_QUIET_POLLS; i++) {
-            if (i && (i % SCAN_REPROBE) == 0 && probes < SCAN_MAX_PROBES) {
-                send_probe_request();
-                probes++;
-            }
-            if (rx_one())
-                quiet = 0;
-            else
-                quiet++;
-        }
-    }
-    return ap_count;
 }
 
 /* ------------------------------------------------------------------ */
@@ -551,8 +190,6 @@ static void wpa_start(const u8 *ssid, u8 ssid_len, const char *pass,
 
     memcpy(aa, bssid, 6);
     memcpy(spa, our_mac, 6);
-    printf("WPA2: passphrase %u chars, deriving PMK...\n",
-           (unsigned)strlen(pass));
     wl_pmk(pass, ssid, ssid_len, pmk);
 
     for (int i = 0; i < 6; i++)
@@ -566,11 +203,9 @@ static void wpa_start(const u8 *ssid, u8 ssid_len, const char *pass,
     wpa_state = 1;
 }
 
-/* Pull the GTK out of an EAPOL-Key frame's key data.  It arrives as a key data
- * encapsulation: 0xDD, length, OUI 00-0F-AC, type 1 (GTK), one byte of key
- * information (bits 0-1 = key id, bit 2 = Tx), one reserved byte, then the key
- * itself — a six-byte prefix, so length - 6 is the key size and the key starts
- * six bytes into the encapsulation body.  Returns 0 when a GTK was found. */
+/* Pull the GTK out of an EAPOL-Key frame's key data (a key data encapsulation:
+ * 0xDD, length, OUI 00-0F-AC, type 1 (GTK), key-info byte, reserved byte, then
+ * the key — a six-byte prefix).  Returns 0 when a GTK was found. */
 static int gtk_from_keydata(const u8 *kd, int kd_len) {
     for (int i = 0; i + 6 <= kd_len; ) {
         u8 type = kd[i];
@@ -595,21 +230,14 @@ static int gtk_from_keydata(const u8 *kd, int kd_len) {
 
 static void wpa_rx(const u8 *e, int len) {
     u16 kinfo;
-    int ack, mic, kd_len;
-    const char *msg;
+    int ack, kd_len;
 
     if (len < 99 || e[1] != 3)
         return;
 
     kinfo   = (u16)((e[5] << 8) | e[6]);
     ack     = (kinfo & 0x0080) != 0;
-    mic     = (kinfo & 0x0100) != 0;
     kd_len  = (e[97] << 8) | e[98];
-    msg = (ack && !mic) ? "msg1" : (ack && mic) ? "msg3"
-        : (!ack && mic) ? "msg2/4" : "?";
-
-    printf("eapol-key rx: %s len=%d kinfo=0x%04x kd=%d state=%d\n",
-           msg, len, kinfo, kd_len, wpa_state);
 
     if (!ack)
         return;
@@ -618,7 +246,7 @@ static void wpa_rx(const u8 *e, int len) {
     if (wpa_state == 1) {
         memcpy(anonce, e + 17, 32);
         derive_ptk();
-        printf("WPA2: msg1 -> PTK derived, msg2 tx rc=%d\n", send_msg2());
+        send_msg2();
         wpa_state = 2;
         return;
     }
@@ -638,11 +266,9 @@ static void wpa_rx(const u8 *e, int len) {
             printf("WPA2: msg3 MIC mismatch (bad passphrase?)\n");
             return;
         }
-        /* msg3 carries the group key: take it before msg4 completes the
-         * handshake (it is installed together with the TK afterwards).  With
-         * the Encrypted Key Data bit set the key data is AES-Key-Wrapped with
-         * the KEK — the usual case — so unwrap it first; the MIC above already
-         * covered the wrapped bytes, so the check just performed still holds. */
+        /* msg3 carries the group key.  With the Encrypted Key Data bit set the
+         * key data is AES-Key-Wrapped with the KEK (the usual case); the MIC
+         * above already covered the wrapped bytes. */
         const u8 *kd = e + 99;
         int kdl = kd_len;
         u8 plain[512];
@@ -655,13 +281,11 @@ static void wpa_rx(const u8 *e, int len) {
                 printf("WPA2: msg3 key data did not unwrap (bad KEK?)\n");
             }
         }
-        if (gtk_from_keydata(kd, kdl) == 0)
-            printf("WPA2: msg3 carries the GTK, id=%u len=%d\n",
-                   (unsigned)gtk_id, gtk_len);
-        else
+        if (gtk_from_keydata(kd, kdl) != 0)
             printf("WPA2: no GTK in msg3 — group traffic will not decode\n");
 
-        printf("WPA2: msg3 verified, msg4 tx rc=%d — handshake done\n", send_msg4());
+        send_msg4();
+        printf("WPA2: handshake done\n");
         wpa_state = 3;
     }
 }
@@ -670,80 +294,60 @@ static void wpa_rx(const u8 *e, int len) {
 /* connect                                                             */
 /* ------------------------------------------------------------------ */
 
-static struct ap_info *find_ap(const char *ssid) {
-    size_t sl = strlen(ssid);
+static int do_scan(int *count) {
+    int n = wl_scan(wl_fd);
 
-    for (int i = 0; i < ap_count; i++) {
-        if (aps[i].ssid_len == sl && memcmp(aps[i].ssid, ssid, sl) == 0)
-            return &aps[i];
+    if (n < 0) {
+        printf("scan failed: %s\n", wl_error());
+        return -1;
     }
-    return NULL;
+    *count = n;
+    return 0;
 }
 
-static int connect_ap(struct ap_info *ap, const char *pass) {
-    printf("connecting to '%s' %02x:%02x:%02x:%02x:%02x:%02x ch=%u privacy=%u\n",
-           ap->ssid, ap->bssid[0], ap->bssid[1], ap->bssid[2],
-           ap->bssid[3], ap->bssid[4], ap->bssid[5],
-           (unsigned)ap->channel, (unsigned)ap->privacy);
+/* Look up an SSID in the BSS list the caller already scanned.  The engine keeps
+ * the list until the next scan, so search it in place — re-running the scan here
+ * would repeat the whole radio sweep (the join hung on that second sweep). */
+static int find_ap(const char *ssid, int n, cact_wlan_bss_t *out) {
+    size_t sl = strlen(ssid);
 
-    memcpy(cur_bssid, ap->bssid, 6);
-    memcpy(cur_ssid, ap->ssid, 33);
-    cur_ssid_len = ap->ssid_len;
-    cur_rsn_len = ap->rsn_len;
-    memcpy(cur_rsn, ap->rsn, ap->rsn_len);
+    for (int i = 0; i < n; i++) {
+        cact_wlan_bss_t b;
+        memset(&b, 0, sizeof(b));
+        b.index = (uint32_t)i;
+        if (wl_get_bss(wl_fd, &b) != 0)
+            continue;
+        if (b.ssid_len == sl && memcmp(b.ssid, ssid, sl) == 0) {
+            *out = b;
+            return 1;
+        }
+    }
+    return 0;
+}
 
-    if (wl_set_channel(wl_fd, ap->channel) != 0) {
-        printf("cannot set channel %u: %s\n", (unsigned)ap->channel, wl_error());
+static int connect_ap(const cact_wlan_bss_t *b, const char *pass) {
+    printf("connecting to '%.*s' %02x:%02x:%02x:%02x:%02x:%02x ch=%u privacy=%u\n",
+           (int)b->ssid_len, (const char *)b->ssid,
+           b->bssid[0], b->bssid[1], b->bssid[2],
+           b->bssid[3], b->bssid[4], b->bssid[5],
+           (unsigned)b->channel, (unsigned)b->privacy);
+
+    memcpy(cur_bssid, b->bssid, 6);
+    memcpy(cur_ssid, b->ssid, 33);
+    cur_ssid_len = b->ssid_len;
+    cur_rsn_len  = b->rsn_len;
+    memcpy(cur_rsn, b->rsn, b->rsn_len);
+
+    /* The engine runs open-system auth + association. */
+    WL_TRACE("joining (auth/assoc)...\n");
+    if (wl_connect(wl_fd, b->bssid, b->ssid, b->ssid_len) != 0) {
+        printf("join failed: %s\n", wl_error());
         return -1;
     }
+    printf("associated\n");
 
-    /* The synthesizer needs a moment to settle after the channel change: the
-     * scan left the radio hopping channels, and an auth frame sent while the RF
-     * is still retuning is lost. */
-    usleep(5000);
-
-    /* Discard the frames the channel walk left queued so a stale response is
-     * not read as this attempt's. */
-    drain_rx();
-
-    /* Hand the AP's beacon parameters to the driver before the first frame:
-     * management frames and EAPOL then go out at the lowest basic rate and with
-     * the AP's slot time and protection settings, as mac80211's bss_conf does. */
-    cact_wlan_rates_t rates;
-    rates.basic = ap->basic_rates;
-    rates.flags = ap->erp_flags;
-    if (wl_set_rates(wl_fd, &rates) != 0) {
-        printf("cannot program the AP's rates: %s\n", wl_error());
-        return -1;
-    }
-    printf("rates: basic=0x%03x erp=0x%x\n",
-           (unsigned)ap->basic_rates, (unsigned)ap->erp_flags);
-
-    auth_ok = 0;
-    int rc = send_auth(ap->bssid);
-    printf("auth tx: %s\n", rc == 0 ? "sent" : wl_error());
-    for (int i = 0; i < AUTH_POLLS && !auth_ok; i++)
-        rx_one();
-    if (!auth_ok) {
-        printf("authentication failed\n");
-        return -1;
-    }
-
-    assoc_ok = 0;
-    rc = send_assoc(ap);
-    printf("assoc tx: %s\n", rc == 0 ? "sent" : wl_error());
-    for (int i = 0; i < ASSOC_POLLS && !assoc_ok; i++)
-        rx_one();
-    if (!assoc_ok) {
-        printf("association failed\n");
-        return -1;
-    }
-
-    wl_set_bssid(wl_fd, ap->bssid);
-
-    if (!ap->privacy) {
-        wl_set_link(wl_fd, 1);
-        printf("associated (open) — link up\n");
+    if (!b->privacy) {
+        printf("open network — link up\n");
         return 0;
     }
     if (cur_rsn_len == 0) {
@@ -755,9 +359,14 @@ static int connect_ap(struct ap_info *ap, const char *pass) {
         return -1;
     }
 
-    wpa_start(ap->ssid, ap->ssid_len, pass, ap->bssid);
-    for (int i = 0; i < WPA_POLLS && wpa_state != 3; i++)
+    wpa_start(cur_ssid, cur_ssid_len, pass, cur_bssid);
+    WL_TRACE("WPA2 handshake, waiting for EAPOL...\n");
+    for (int i = 0; i < WPA_POLLS && wpa_state != 3; i++) {
+        if (i && i % 50 == 0)
+            WL_TRACE("WPA2 handshake, still waiting (state=%d)...\n",
+                     wpa_state);
         rx_one();
+    }
     if (wpa_state != 3) {
         printf("WPA2 handshake did not complete (state=%d)\n", wpa_state);
         return -1;
@@ -772,11 +381,9 @@ static int connect_ap(struct ap_info *ap, const char *pass) {
                        (u32)gtk_len) != 0)
             printf("failed to install the group key: %s\n", wl_error());
         else
-            printf("installed GTK id=%u — broadcast/multicast usable\n",
-                   (unsigned)gtk_id);
+            printf("WPA2: GTK installed (id=%u)\n", (unsigned)gtk_id);
     }
-    wl_set_link(wl_fd, 1);
-    printf("installed TK — link up\n");
+    printf("WPA2: link up\n");
     return 0;
 }
 
@@ -823,24 +430,27 @@ int main(int argc, char **argv) {
     if (argc >= 2 && strcmp(argv[1], "--selftest") == 0)
         return selftest();
 
-    /* Diagnostics: read the driver's link state and data-path counters without
+    wl_fd = open("/dev/wlan0", O_RDWR);
+    if (wl_fd < 0) {
+        printf("wljoin: cannot open /dev/wlan0 (errno=%d)\n", errno);
+        return 1;
+    }
+
+    /* Diagnostics: read the engine's link state and datapath counters without
      * touching the radio, e.g. right after dhcpd has tried to get a lease. */
     if (argc >= 2 && strcmp(argv[1], "--status") == 0) {
-        wl_fd = open("/dev/wlan0", O_RDWR);
-        if (wl_fd < 0) {
-            printf("wljoin: cannot open /dev/wlan0 (errno=%d)\n", errno);
-            return 1;
-        }
         cact_wlan_status_t st;
         if (wl_status(wl_fd, &st) != 0) {
             printf("wljoin: status request failed (errno=%d)\n", errno);
             return 1;
         }
-        printf("wljoin: link=%d last_error=%d ccmp_selftest=%d\n",
-               (int)st.linked, (int)st.last_error, (int)st.ccmp_selftest);
-        printf("wljoin: tx data=%u group=%u fail=%u\n",
+        printf("wljoin: link=%d last_error=%d ccmp_selftest=%d beacon=%u deauth=%u\n",
+               (int)st.linked, (int)st.last_error, (int)st.ccmp_selftest,
+               (unsigned)st.beacon_rx, (unsigned)st.deauth_rx);
+        printf("wljoin: tx data=%u group=%u fail=%u drop(noassoc=%u nokey=%u)\n",
                (unsigned)st.tx_data, (unsigned)st.tx_group,
-               (unsigned)st.tx_fail);
+               (unsigned)st.tx_fail, (unsigned)st.tx_drop_noassoc,
+               (unsigned)st.tx_drop_nokey);
         printf("wljoin: rx data=%u group=%u bad=%u nokey=%u other=%u\n",
                (unsigned)st.rx_data, (unsigned)st.rx_group,
                (unsigned)st.rx_bad, (unsigned)st.rx_nokey,
@@ -848,34 +458,35 @@ int main(int argc, char **argv) {
         return 0;
     }
 
-    wl_fd = open("/dev/wlan0", O_RDWR);
-    if (wl_fd < 0) {
-        printf("wljoin: cannot open /dev/wlan0 (errno=%d)\n", errno);
-        return 1;
-    }
-
     cact_wlan_status_t st;
     if (wl_status(wl_fd, &st) == 0) {
         memcpy(our_mac, st.mac, 6);
-        /* Bring-up failures have no ioctl to come back from: the driver parks
+        /* Bring-up failures have no ioctl to come back from: the engine parks
          * them here instead of printing. */
         if (st.last_error)
-            printf("wljoin: the driver reports error %d\n", st.last_error);
+            printf("wljoin: the engine reports error %d\n", st.last_error);
     }
     printf("wljoin: MAC %02x:%02x:%02x:%02x:%02x:%02x\n",
            our_mac[0], our_mac[1], our_mac[2],
            our_mac[3], our_mac[4], our_mac[5]);
 
-    int n = do_scan();
-    if (n < 0)
+    int n = 0;
+    WL_TRACE("scanning radio...\n");
+    if (do_scan(&n) != 0)
         return 1;
     printf("scan: %d AP(s)\n", n);
-    for (int i = 0; i < n; i++)
-        printf("  %02x:%02x:%02x:%02x:%02x:%02x ch=%u %s '%s'\n",
-               aps[i].bssid[0], aps[i].bssid[1], aps[i].bssid[2],
-               aps[i].bssid[3], aps[i].bssid[4], aps[i].bssid[5],
-               (unsigned)aps[i].channel, aps[i].privacy ? "WPA2" : "open",
-               aps[i].ssid);
+    for (int i = 0; i < n; i++) {
+        cact_wlan_bss_t b;
+        memset(&b, 0, sizeof(b));
+        b.index = (uint32_t)i;
+        if (wl_get_bss(wl_fd, &b) != 0)
+            continue;
+        printf("  %02x:%02x:%02x:%02x:%02x:%02x ch=%u %s '%.*s'\n",
+               b.bssid[0], b.bssid[1], b.bssid[2],
+               b.bssid[3], b.bssid[4], b.bssid[5],
+               (unsigned)b.channel, b.privacy ? "WPA2" : "open",
+               (int)b.ssid_len, (const char *)b.ssid);
+    }
 
     if (argc < 2) {
         printf("usage: wljoin <ssid> [passphrase]   "
@@ -883,11 +494,11 @@ int main(int argc, char **argv) {
         return 0;
     }
 
-    struct ap_info *ap = find_ap(argv[1]);
-    if (!ap) {
+    cact_wlan_bss_t ap;
+    if (find_ap(argv[1], n, &ap) <= 0) {
         printf("SSID not found in the scan: %s\n", argv[1]);
         return 1;
     }
     const char *pass = (argc >= 3) ? argv[2] : "";
-    return connect_ap(ap, pass) == 0 ? 0 : 1;
+    return connect_ap(&ap, pass) == 0 ? 0 : 1;
 }

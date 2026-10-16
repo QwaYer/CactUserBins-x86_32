@@ -5,7 +5,7 @@
   <img src="https://img.shields.io/badge/language-C-orange.svg?style=for-the-badge" alt="Language: C">
   <img src="https://img.shields.io/badge/link-PIE%20%2B%20clibc.so-purple.svg?style=for-the-badge" alt="PIE + clibc.so">
   <img src="https://img.shields.io/badge/layout-one%20ELF%20per%20tool-blue.svg?style=for-the-badge" alt="One ELF per tool">
-  <img src="https://img.shields.io/badge/tools-84-green.svg?style=for-the-badge" alt="84 tools">
+  <img src="https://img.shields.io/badge/tools-123-green.svg?style=for-the-badge" alt="123 tools">
   <img src="https://img.shields.io/badge/install-LocalRepoCactOS-0369a1.svg?style=for-the-badge" alt="install → LocalRepoCactOS">
 </p>
 
@@ -20,7 +20,7 @@
 
 | | |
 |---|---|
-| **Utilities** | **84** standalone programs (see [`meson.build`](meson.build) `apps`) |
+| **Utilities** | **123** standalone programs (see [`meson.build`](meson.build) `apps`) |
 | **`/bin` vs `/sbin`** | **`lr_bin`** / **`lr_sbin`** options used by the **`stage`** target (staging dirs under **LocalRepo**) |
 | **Shared objects** | **`common/ex_*.c`** compiled once; each link pulls **`start.o`** + **one** `*/main.o` + all **`common/*.o`** with **`--gc-sections`** so unused entrypoints are dropped |
 | **Load address** | PIE **ET_DYN** at **`0x08000000`** ([`link.ld`](link.ld)) — same family as **cactsole** / **cgoct** |
@@ -77,13 +77,20 @@ CactUserBins-x86_32/
 │   ├── ex_ldd.c          # ldd (ELF32 DT_NEEDED reader, GNU-compatible flags)
 │   ├── ex_sys.c          # clear, date, uptime, kill, su, sleep, free, sysinfo, run, modload, modunload, poweroff, reboot, halt
 │   ├── ex_echo.c         # echo (with -n / -e)
-│   ├── ex_nav.c          # pwd (cd stays a cactsole builtin)
+│   ├── ex_nav.c          # pwd
 │   ├── ex_copy.c         # cp, touch
 │   ├── ex_path.c         # basename, dirname, realpath, which, mktemp, tty
 │   ├── ex_system.c       # uname, hostname, nproc, sync, env, printenv, du, find
 │   ├── ex_text.c         # head, tail, wc, sort, uniq, cut, tr, tee, seq, yes, printf
 │   ├── ex_proc.c         # ps, mount, umount, lsmod, lspci, lsusb, dmesg, sha256sum, sha384sum
-│   ├── ex_util.c/.h      # shared helpers (read_all, dir_foreach, mkdir -p, copy_file, ...)
+│   ├── ex_fmt.c          # od, hexdump, strings, base64, cmp, diff, nl, rev, file
+│   ├── ex_stream.c       # tac, shuf, split, fold, paste
+│   ├── ex_math.c         # test, expr, factor
+│   ├── ex_admin.c        # lscpu, mountpoint, truncate, pidof, killall, xargs, timeout
+│   ├── ex_view.c         # more, cal, tree
+│   ├── ex_archive.c      # tar (ustar)
+│   ├── ex_shell.c        # cd, export, unset, exit, jobs, fg, bg, help (cactsole bridge)
+│   ├── ex_util.c/.h      # shared helpers (read_all, dir_foreach, mkdir -p, copy_file, parse_size, shell_ctl, ...)
 ├── build-meson/          # generated ELFs (gitignored)
 ├── cat/ ls/ …/           # one directory per utility; each holds main.c → main.o
 ├── fdisk/                # parted-analog: ptab.c (pure) + main.c
@@ -95,8 +102,9 @@ CactUserBins-x86_32/
 └── README.md
 ```
 
-**`apps`** (authoritative list in [`meson.build`](meson.build)):  
+**`apps`** (authoritative list in [`meson.build`](meson.build)):
 `pwd` `ls` `mkdir` `rmdir` `rm` `cat` `wrt` `stat` `mv` `ln` `readlink` `ldd` `clear` `date` `uptime` `kill` `su` `sleep` `free` `sysinfo` `modload` `modunload` `run` `echo` `true` `false` `whoami` `id` `chmod` `chown` `version` `ip` `ping` `wget` `dd` `df` `grep` `fdisk` `mkfs.ext4` `mkfs.fat32` `cact-rootfs` `poweroff` `reboot` `halt` `head` `tail` `wc` `sort` `uniq` `cut` `tr` `tee` `seq` `yes` `printf` `cp` `touch` `basename` `dirname` `realpath` `which` `mktemp` `tty` `uname` `hostname` `nproc` `sync` `env` `printenv` `du` `find` `ps` `lsmod` `lspci` `lsusb` `dmesg` `sha256sum` `sha384sum` `md5sum` `sha1sum` `wljoin` `mount` `umount` `ced`
+`od` `hexdump` `strings` `base64` `cmp` `diff` `nl` `rev` `file` `tac` `shuf` `split` `fold` `paste` `test` `expr` `factor` `xargs` `timeout` `pidof` `killall` `lscpu` `mountpoint` `truncate` `more` `cal` `tree` `tar` `nc` `dns` `cd` `export` `unset` `exit` `jobs` `fg` `bg` `help`
 
 ---
 
@@ -108,6 +116,7 @@ CactUserBins-x86_32/
 | **Self-documenting tools** | Every tool handles **`--help`** as its first argument: it prints its own usage to **stdout** and exits **0**. Usage text is defined once per tool and shared with its argument-error path, so the two cannot drift. This is what **cactsole**'s **`help <tool>`** relies on — the shell stores no description of these programs. Only the long form **`--help`** is a help flag; **`-h`** is not, because it already means **`--human-readable`** for **`df`**. |
 | **FHS-style paths** | **`sbinfs`** exposes **`/usr/sbin/*`** (as **`/sbin/*`** through the symlink) for privileged-style tools (`kill`, `su`, PCI **`modload`** / **`modunload`**, **`ping`**, **`ip`**, the power tools, disk/fs tools) |
 | **Syscall drift** | If **`syscall.h`** / libc numbers change in CactLib, rebuild **libc**, then **re-link** cactsole, **CactUserBins**, cgoct, and any other dynamic ELFs |
+| **cactsole bridge** | **`cd`**, **`export`**, **`unset`**, **`exit`**, **`jobs`**, **`fg`**, **`bg`** (`common/ex_shell.c`) are ordinary tools, but a child cannot change the shell — so each writes a request line to **`$CACT_CTL_FD`**, the control pipe cactsole hands every child and drains after each command (see cactsole's README). **`kill`** uses the same channel only for **`%JOB`** specs; **`help`** needs no channel — it lists **`PATH`** and runs a named tool with **`--help`** |
 
 ---
 
@@ -193,6 +202,78 @@ arguments), `id -u/-g/-G/-n`, `chmod -R`, `chown -R`.
 
 ---
 
+## 🧭 Additional utilities
+
+A second wave of everyday tools, all userspace-only and built on the same
+`/proc`, `/dev` and file interfaces as the rest of the suite.
+
+### Binary / text formatting and comparison — `common/ex_fmt.c`
+
+| Tool | Purpose |
+|------|---------|
+| **`od`** | Dump a file in octal (default, `-t o2`), hex (`-x`), decimal (`-t d1`), unsigned (`-t u1`) or characters (`-c`). `-A` sets the offset radix, `-N`/`-j` limit and skip. |
+| **`hexdump`** | `-C` canonical `hex + |ASCII|` dump (default), `-b` octal bytes, `-c` characters; `-n`/`-s` limit and skip. |
+| **`strings`** | Print runs of ≥ `-n` (default 4) printable characters; `-t d|o|x` prints each run's offset. |
+| **`base64`** | Encode (wrapped at `-w`, default 76) or decode (`-d`) a file or stdin. |
+| **`cmp`** | Byte compare: first difference (or `-l` for all); `-s` silent. Exit 0/1/2. |
+| **`diff`** | Line diff via an LCS alignment: normal format by default, `-u` unified hunks (3 lines of context), `-q` brief. |
+| **`nl`** | Number lines: `-b a|t`, `-w` width, `-s` separator, `-v`/`-i` start and step. |
+| **`rev`** | Reverse the characters of each line. |
+| **`file`** | Identify a file from a built-in signature table (ELF, ext4, FAT, tar, gzip/xz/bzip2/zip, PNG/JPEG/GIF/PDF, MBR/GPT, text, …). |
+
+### Stream shaping — `common/ex_stream.c`
+
+| Tool | Purpose |
+|------|---------|
+| **`tac`** | Print lines in reverse order. |
+| **`shuf`** | Random permutation of lines, `-e` arguments, or an `-i LO-HI` range; `-n` limits the output. |
+| **`split`** | Split into pieces by lines (`-l`, default 1000) or bytes (`-b`); suffix length `-a` (default 2), prefix optional. |
+| **`fold`** | Wrap long lines at `-w` columns, `-s` breaks at the last blank. |
+| **`paste`** | Merge files column-wise (TAB default) or serially (`-s`); `-d` sets the delimiter list (with `\t`/`\n`/`\0`). |
+
+### Logic / integers — `common/ex_math.c`
+
+| Tool | Purpose |
+|------|---------|
+| **`test`** | POSIX conditional evaluator: file tests (`-e -f -d -s -r -w -x -L -p -b -c`), string (`=` `!=` `-z` `-n`), integers (`-eq -ne -lt -le -gt -ge`), `!`, `-a`, `-o`, parentheses. Also usable as `[`. |
+| **`expr`** | Integer arithmetic (`+ - * / %`), string ops (`length`, `substr`, `index`), comparisons (`= != < <= > >=`) and logic (`|` `&`). |
+| **`factor`** | Print the prime factorisation of each number given (or read from stdin). |
+
+### System administration — `common/ex_admin.c`
+
+| Tool | Purpose |
+|------|---------|
+| **`lscpu`** | Summarise the CPUs from `/proc/cpuinfo` (architecture, count, vendor, model, flags). |
+| **`mountpoint`** | Test a directory against `/proc/mounts`; exit 0/1/32. |
+| **`truncate`** | Set (`-s`) or adjust (`+N`/`-N`) a file's length, with K/M/G suffixes; `-c` never creates. |
+| **`pidof`** | Find PIDs whose `/proc/<pid>/comm` matches; `-s` prints only one. |
+| **`killall`** | Send a signal (default TERM; `-s NAME|NUM`) to every process with a matching name. |
+| **`xargs`** | Build and run command lines from stdin items: `-0`, `-n N`, `-I REPL`, `-t`, `-r`. |
+| **`timeout`** | Run a command and signal it (`-s`) after a time limit; exit 124 on timeout. |
+
+### Viewers / display — `common/ex_view.c`
+
+| Tool | Purpose |
+|------|---------|
+| **`more`** | Page through files a screenful at a time (space = next, Enter = one line, `b` = back, `q` = quit); acts as a filter when not on a terminal. |
+| **`cal`** | Print this month (`cal`), a given month/year (`cal MONTH YEAR`) or a whole year (`cal YEAR`). |
+| **`tree`** | Recursive directory tree with branch connectors; `-a` hidden, `-d` dirs only, `-f` full paths, `-L` depth. |
+
+### Archive — `common/ex_archive.c`
+
+| Tool | Purpose |
+|------|---------|
+| **`tar`** | Plain ustar archives: `-c` create, `-t` list, `-x` extract; `-v` verbose, `-f` archive, `-C` chdir. Stores files, directories and symlinks; no compression. |
+
+### Network — `common/ex_net.c`
+
+| Tool | Purpose |
+|------|---------|
+| **`nc`** | Bidirectional TCP relay: `nc HOST PORT` connects and relays stdin/stdout; `nc -l [-p PORT]` accepts one connection. |
+| **`dns`** | Send an A-record query: `dns HOST [DNS_IP]` prints `HOST -> ADDRESS`. |
+
+---
+
 ## ✍️ Editor — `ced`
 
 `ced` is a nano-like full-screen editor: `ced [FILE]`.  It owns the whole
@@ -213,9 +294,14 @@ line and shortcut bar — and restores a clean screen on exit.
 
 Design notes:
 
-- **No termios.** The console has no line discipline at all — no echo, no
-  canonical mode, one key per `read()` — so the editor is raw by construction;
-  `tcgetattr` is not involved.  The geometry comes from `TIOCGWINSZ`.
+- **Raw terminal.** The console has a line discipline (`ISIG|ICANON|ECHO` by
+  default), so the editor switches its terminal to raw mode on entry
+  (`tcgetattr`/`tcsetattr`, clearing `ICANON|ECHO` while keeping `ISIG`,
+  `VMIN=1`) and restores it on exit.  With `ICANON` left on, keys would be
+  buffered until Enter and echoed, so arrow-key escape sequences would show up
+  as literal text.  `ISIG` stays on so the console still turns ^C/^\ into
+  SIGINT/SIGQUIT (the editor handles them).  The geometry comes from
+  `TIOCGWINSZ`.
 - **Everything on screen is ANSI.** Positioning (`CSI H`), erasing (`CSI J/K`)
   and **SGR 7 reverse video** for the bars and the block cursor.  Each row is
   drawn with a single `write()` because the console resets colour/reverse state

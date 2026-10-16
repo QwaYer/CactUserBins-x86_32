@@ -8,6 +8,8 @@
  * stdin is read.  Return: 0 — found, 1 — not found, 2 — error.
  */
 
+#include "common/ex_util.h"
+
 #include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,8 +18,6 @@
 #include <stat.h>
 #include <dirent.h>
 #include <stdint.h>
-
-#define GREP_MAX_DEPTH 24
 
 typedef struct {
     int icase;
@@ -227,12 +227,21 @@ static int g_process_file(const char *path, const grep_opt_t *o,
     return rc;
 }
 
-static int g_process_dir(const char *path, const grep_opt_t *o, int depth);
+typedef struct {
+    const grep_opt_t *o;
+    int any;   /* 0 = nothing matched, 1 = matched, 2 = error */
+} g_walk_t;
+
+static int g_walk_tree(const char *path, const grep_opt_t *o);
 
 static int g_process_path(const char *path, const grep_opt_t *o, int depth,
                           int show_name) {
     struct stat st;
-    if (stat(path, &st) != 0) {
+    /* A symlink named on the command line is followed (as GNU grep -r does);
+     * one met while descending a tree is not, so a link to a directory is not
+     * walked a second time from inside. */
+    int ok = (depth == 0) ? (stat(path, &st) == 0) : (lstat(path, &st) == 0);
+    if (!ok) {
         fprintf(stderr, "grep: %s: not found\n", path);
         return 2;
     }
@@ -241,38 +250,39 @@ static int g_process_path(const char *path, const grep_opt_t *o, int depth,
             fprintf(stderr, "grep: %s: is a directory (use -r)\n", path);
             return 2;
         }
-        if (depth >= GREP_MAX_DEPTH) return 0;
-        return g_process_dir(path, o, depth + 1);
+        return g_walk_tree(path, o);
     }
     if (!S_ISREG(st.st_mode)) return 0;
     return g_process_file(path, o, show_name);
 }
 
-static int g_process_dir(const char *path, const grep_opt_t *o, int depth) {
-    int fd = open(path, O_RDONLY, 0);
-    if (fd < 0) {
-        fprintf(stderr, "grep: %s: cannot read directory\n", path);
-        return 2;
-    }
-    int any = 0;
-    struct dirent de[8];
-    for (;;) {
-        int n = getdents(fd, de, sizeof(de));
-        if (n <= 0) break;
-        int entries = n / (int)sizeof(struct dirent);
-        for (int i = 0; i < entries; i++) {
-            const char *nm = de[i].d_name;
-            if (!nm[0] || strcmp(nm, ".") == 0 || strcmp(nm, "..") == 0)
-                continue;
-            char child[512];
-            snprintf(child, sizeof(child), "%s/%s", path, nm);
-            int r = g_process_path(child, o, depth, 1);
-            if (r == 0) any = 1;
-            else if (r == 2) any = 2;
-        }
-    }
-    close(fd);
-    return any;
+/* One regular file found by the recursive walk — directories are descended by
+ * the walker itself, and links are skipped (GNU grep -r follows only ones named
+ * on the command line). */
+static int g_walk_enter(const char *full, const char *name, int depth, int is_last,
+                        const struct stat *st, void *ud) {
+    g_walk_t *g = (g_walk_t *)ud;
+    int r;
+    (void)name; (void)depth; (void)is_last;
+    if (!S_ISREG(st->st_mode)) return 0;
+    r = g_process_file(full, g->o, 1);
+    if (r == 0) g->any = 1;
+    else if (r == 2) g->any = 2;
+    return 0;
+}
+
+/* Recursive grep of one directory: iterative (cact_ub_tree_walk), so nesting
+ * depth costs heap rather than the 16 KiB user stack. */
+static int g_walk_tree(const char *path, const grep_opt_t *o) {
+    g_walk_t g;
+    cact_ub_walk_opts_t opts;
+    g.o   = o;
+    g.any = 0;
+    opts.max_depth = -1;
+    opts.sel       = NULL;
+    opts.sort      = 1;
+    (void)cact_ub_tree_walk(path, 0, &opts, g_walk_enter, NULL, &g);
+    return g.any;
 }
 
 static void grep_usage(void) {

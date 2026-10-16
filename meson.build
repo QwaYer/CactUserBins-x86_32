@@ -77,7 +77,7 @@ apps = [
   'pwd', 'ls', 'mkdir', 'rmdir', 'rm', 'cat', 'wrt', 'stat', 'mv', 'ln',
   'readlink', 'ldd', 'clear', 'date', 'uptime', 'kill', 'su', 'sleep', 'free', 'sysinfo',
   'modload', 'modunload', 'run', 'echo', 'true', 'false', 'whoami', 'id',
-  'chmod', 'chown', 'version', 'ip', 'ping', 'wget', 'dd', 'df', 'grep', 'fdisk', 'mkfs.ext4',
+  'chmod', 'chown', 'version', 'ip', 'ping', 'arp', 'wget', 'dd', 'df', 'grep', 'fdisk', 'mkfs.ext4',
   'mkfs.fat32', 'cact-rootfs', 'poweroff', 'reboot', 'halt',
   'head', 'tail', 'wc', 'sort', 'uniq', 'cut', 'tr', 'tee', 'seq', 'yes', 'printf',
   'cp', 'touch',
@@ -85,11 +85,19 @@ apps = [
   'uname', 'hostname', 'nproc', 'sync', 'env', 'printenv', 'du', 'find',
   'ps', 'lsmod', 'lspci', 'lsusb', 'dmesg', 'sha256sum', 'sha384sum', 'mount', 'umount',
   'md5sum', 'sha1sum', 'wljoin', 'ced',
+  'od', 'hexdump', 'strings', 'base64', 'cmp', 'diff', 'nl', 'rev', 'file',
+  'tac', 'shuf', 'split', 'fold', 'paste',
+  'test', 'expr', 'factor',
+  'xargs', 'timeout', 'pidof', 'killall', 'lscpu', 'mountpoint', 'truncate',
+  'more', 'cal', 'tree', 'tar', 'nc', 'dns',
+  # cactsole bridge tools: they send requests to the shell over $CACT_CTL_FD
+  # (see common/ex_shell.c) instead of being shell builtins.
+  'cd', 'export', 'unset', 'exit', 'jobs', 'fg', 'bg', 'help',
 ]
 
 # The Makefile's SBIN_APPS list.
 sbin_apps = [
-  'kill', 'su', 'modload', 'modunload', 'ping', 'ip', 'dd', 'df',
+  'kill', 'su', 'modload', 'modunload', 'ping', 'ip', 'arp', 'dd', 'df',
   'fdisk', 'mkfs.ext4', 'mkfs.fat32', 'cact-rootfs',
   'poweroff', 'reboot', 'halt',
   'mount', 'umount', 'wljoin',
@@ -123,6 +131,13 @@ common_lib = static_library('common',
     'common/ex_system.c',
     'common/ex_text.c',
     'common/ex_util.c',
+    'common/ex_fmt.c',
+    'common/ex_stream.c',
+    'common/ex_math.c',
+    'common/ex_admin.c',
+    'common/ex_view.c',
+    'common/ex_archive.c',
+    'common/ex_shell.c',
   ),
   # ex_sys.c reads the current KMS mode for sysinfo, so the shared objects
   # compile against the DRM uapi headers.
@@ -137,6 +152,10 @@ foreach app : apps
     use_common = false
   endif
 
+  # Meson/ninja reserve the target name "test", so the binary is built as
+  # cact-test and the stage step installs it under its real name.
+  outname = (app == 'test') ? 'cact-test' : app
+
   app_lib = static_library('app-' + app.underscorify(), sources, c_args: c_args)
 
   link_cmd = [ld, '-m', 'elf_i386', '-pie', '--dynamic-linker=/lib/ld.so',
@@ -150,7 +169,7 @@ foreach app : apps
   link_cmd += ['--no-whole-archive', clibc_so]
 
   app_bins += custom_target('bin-' + app.underscorify(),
-    output: app,
+    output: outname,
     input: sources,
     command: link_cmd,
     # start.o and clibc.so are linked in, so a rebuilt CactLibc must relink every
@@ -168,6 +187,7 @@ _stage_script = (
   'set -e; bindir="$1"; sbindir="$2"; shift 2; ' +
   'mkdir -p "$bindir" "$sbindir"; ' +
   'for f in "$@"; do n="$(basename "$f")"; ' +
+  'if [ "$n" = "cact-test" ]; then n=test; fi; ' +
   'case "' + _sbin_match + '" in ' +
   '*" $n "*) rm -f "$bindir/$n"; cp -f "$f" "$sbindir/$n" ;; ' +
   '*) cp -f "$f" "$bindir/$n" ;; esac; done'

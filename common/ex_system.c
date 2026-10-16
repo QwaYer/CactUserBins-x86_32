@@ -240,36 +240,69 @@ typedef struct {
     int summarize;
     int human;
     int ret;
-    unsigned long long total;
+    unsigned long long *acc;   /* one running total per depth, on the heap */
+    int cap;
 } du_ctx_t;
 
-static unsigned long long du_walk(const char *path, du_ctx_t *c);
+static int du_acc_reserve(du_ctx_t *c, int depth) {
+    int ncap, k;
+    unsigned long long *grown;
 
-static int du_entry(const char *full, const char *name, void *ud) {
-    (void)name;
+    if (depth < c->cap) return 0;
+    ncap = c->cap ? c->cap * 2 : 16;
+    while (ncap <= depth) ncap *= 2;
+    grown = realloc(c->acc, (size_t)ncap * sizeof(*grown));
+    if (!grown) return -1;
+    for (k = c->cap; k < ncap; k++) grown[k] = 0;
+    c->acc = grown;
+    c->cap = ncap;
+    return 0;
+}
+
+/* Pre-order: a directory opens a fresh total at its own depth, a file adds its
+ * size to the total of the directory it lives in.  Depth costs heap here, not
+ * the 16 KiB user stack (see cact_ub_tree_walk). */
+static int du_enter(const char *full, const char *name, int depth, int is_last,
+                    const struct stat *st, void *ud) {
     du_ctx_t *c = (du_ctx_t *)ud;
-    struct stat st;
-    if (stat(full, &st) != 0) { c->ret = -1; return 0; }
-    if (S_ISDIR(st.st_mode)) {
-        unsigned long long sub = du_walk(full, c);
-        if (!c->summarize) du_print(full, sub, c->human);
-        c->total += sub;
+    (void)name; (void)is_last;
+    if (S_ISDIR(st->st_mode)) {
+        if (du_acc_reserve(c, depth) != 0) { c->ret = -1; return 1; }
+        c->acc[depth] = 0;
     } else {
-        c->total += st.st_size;
-        if (c->all) du_print(full, st.st_size, c->human);
+        c->acc[depth - 1] += st->st_size;
+        if (c->all) du_print(full, st->st_size, c->human);
     }
     return 0;
 }
 
-static unsigned long long du_walk(const char *path, du_ctx_t *c) {
-    struct stat st;
-    if (stat(path, &st) != 0) { c->ret = -1; return 0; }
-    if (!S_ISDIR(st.st_mode)) return st.st_size;
+/* Post-order: a directory's total is now complete — fold it into its parent and
+ * report it (unless -s asked only for the per-PATH total). */
+static int du_leave(const char *full, int depth, void *ud) {
+    du_ctx_t *c = (du_ctx_t *)ud;
+    unsigned long long total = c->acc[depth];
+    if (depth > 0) c->acc[depth - 1] += total;
+    if (!c->summarize) du_print(full, total, c->human);
+    return 0;
+}
 
-    du_ctx_t local = { c->all, c->summarize, c->human, 0, 0 };
-    if (cact_ub_dir_foreach(path, du_entry, &local) < 0) c->ret = -1;
-    if (local.ret != 0) c->ret = local.ret;
-    return local.total;
+/* One du argument: a non-directory reports its own size (lstat: du never
+ * follows a symlink), a directory its tree total. */
+static unsigned long long du_one(const char *path, du_ctx_t *c) {
+    struct stat st;
+    if (lstat(path, &st) != 0) { c->ret = -1; return 0; }
+    if (!S_ISDIR(st.st_mode)) {
+        du_print(path, st.st_size, c->human);
+        return st.st_size;
+    }
+    if (du_acc_reserve(c, 0) != 0) { c->ret = -1; return 0; }
+    c->acc[0] = 0;
+    {
+        cact_ub_walk_opts_t o = { -1, NULL, 1 };
+        if (cact_ub_tree_walk(path, 0, &o, du_enter, du_leave, c) < 0) c->ret = -1;
+    }
+    if (c->summarize) du_print(path, c->acc[0], c->human);
+    return c->acc[0];
 }
 
 static const char du_usage[] =
@@ -298,15 +331,15 @@ int cact_ub_du(char **argv, int argc) {
     }
     int ret = 0;
     if (i >= argc) {
-        du_ctx_t c = { all, summarize, human, 0, 0 };
-        unsigned long long t = du_walk(".", &c);
-        du_print(".", t, human);
+        du_ctx_t c = { all, summarize, human, 0, NULL, 0 };
+        (void)du_one(".", &c);
+        free(c.acc);
         return c.ret ? 1 : 0;
     }
     for (; i < argc; i++) {
-        du_ctx_t c = { all, summarize, human, 0, 0 };
-        unsigned long long t = du_walk(argv[i], &c);
-        du_print(argv[i], t, human);
+        du_ctx_t c = { all, summarize, human, 0, NULL, 0 };
+        (void)du_one(argv[i], &c);
+        free(c.acc);
         if (c.ret) ret = 1;
     }
     return ret;
@@ -347,38 +380,33 @@ typedef struct {
     int maxdepth;       /* -1 = unlimited */
 } find_ctx_t;
 
-typedef struct {
-    find_ctx_t *c;
-    int depth;
-} find_dir_t;
-
-static void find_walk(const char *path, int depth, find_ctx_t *c);
-
-static int find_entry(const char *full, const char *name, void *ud) {
-    (void)name;
-    find_dir_t *d = (find_dir_t *)ud;
-    find_walk(full, d->depth + 1, d->c);
+/* Does this entry match a `-type` letter? */
+static int find_type_match(int type, const struct stat *st) {
+    switch (type) {
+        case 'f': return S_ISREG(st->st_mode);
+        case 'd': return S_ISDIR(st->st_mode);
+        case 'l': return S_ISLNK(st->st_mode);
+        case 'b': return S_ISBLK(st->st_mode);
+        case 'c': return S_ISCHR(st->st_mode);
+        case 'p': return S_ISFIFO(st->st_mode);
+        case 's': return S_ISSOCK(st->st_mode);
+    }
     return 0;
 }
 
-static void find_walk(const char *path, int depth, find_ctx_t *c) {
-    int show = 1;
-    if (c->pat && !find_glob(c->pat, sys_base(path))) show = 0;
-    if (show && c->type) {
-        struct stat st;
-        if (stat(path, &st) != 0) show = 0;
-        else if (c->type == 'f' && !S_ISREG(st.st_mode)) show = 0;
-        else if (c->type == 'd' && !S_ISDIR(st.st_mode)) show = 0;
-    }
-    if (show) printf("%s\n", path);
+static int find_match(const find_ctx_t *c, const char *base, const struct stat *st) {
+    if (c->pat && !find_glob(c->pat, base)) return 0;
+    if (c->type && !find_type_match(c->type, st)) return 0;
+    return 1;
+}
 
-    if (c->maxdepth >= 0 && depth >= c->maxdepth) return;
-
-    struct stat st;
-    if (stat(path, &st) != 0 || !S_ISDIR(st.st_mode)) return;
-
-    find_dir_t d = { c, depth };
-    cact_ub_dir_foreach(path, find_entry, &d);
+/* One entry, reported as the iterative walker reaches it (pre-order). */
+static int find_enter(const char *full, const char *name, int depth, int is_last,
+                      const struct stat *st, void *ud) {
+    const find_ctx_t *c = (const find_ctx_t *)ud;
+    (void)depth; (void)is_last;
+    if (find_match(c, name, st)) printf("%s\n", full);
+    return 0;
 }
 
 int cact_ub_find(char **argv, int argc) {
@@ -393,7 +421,13 @@ int cact_ub_find(char **argv, int argc) {
         const char *a = argv[i];
         if (a[0] == '-' && a[1] != '\0') {
             if (strcmp(a, "-name") == 0 && i + 1 < argc) c.pat = argv[++i];
-            else if (strcmp(a, "-type") == 0 && i + 1 < argc) c.type = argv[++i][0];
+            else if (strcmp(a, "-type") == 0 && i + 1 < argc) {
+                c.type = argv[++i][0];
+                if (!strchr("fdlbcps", c.type)) {
+                    fprintf(stderr, "find: unknown -type %c\n", c.type);
+                    return 1;
+                }
+            }
             else if (strcmp(a, "-maxdepth") == 0 && i + 1 < argc) c.maxdepth = atoi(argv[++i]);
             else {
                 fprintf(stderr, "find: unknown predicate %s\n", a);
@@ -408,12 +442,20 @@ int cact_ub_find(char **argv, int argc) {
     int ret = 0;
     for (int i = 0; i < np; i++) {
         struct stat st;
-        if (stat(paths[i], &st) != 0) {
+        /* lstat, so a dangling symlink is still "found" as a link (GNU find). */
+        if (lstat(paths[i], &st) != 0) {
             fprintf(stderr, "find: %s: not found\n", paths[i]);
             ret = 1;
             continue;
         }
-        find_walk(paths[i], 0, &c);
+        /* The root itself (depth 0) …
+         * …then everything below, walked iteratively: depth costs heap, not the
+         * 16 KiB user stack (see cact_ub_tree_walk). */
+        if (find_match(&c, sys_base(paths[i]), &st)) printf("%s\n", paths[i]);
+        {
+            cact_ub_walk_opts_t o = { c.maxdepth, NULL, 1 };
+            if (cact_ub_tree_walk(paths[i], 0, &o, find_enter, NULL, &c) < 0) ret = 1;
+        }
     }
     return ret;
 }

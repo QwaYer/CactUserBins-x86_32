@@ -1,4 +1,5 @@
-/* pwd — standalone (cd remains cactsole builtin). */
+/* pwd — standalone.  (cd is a separate ELF too, in common/ex_shell.c: it sends
+ * a request to cactsole over the control channel.) */
 
 #include <unistd.h>
 #include <string.h>
