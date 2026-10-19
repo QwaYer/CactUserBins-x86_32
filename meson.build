@@ -41,6 +41,8 @@ _lr_sbin = get_option('lr_sbin')
 lr_sbin = _lr_sbin.startswith('/') ? _lr_sbin : src_root / _lr_sbin
 _drmuapi = get_option('drmuapi')
 drmuapi = _drmuapi.startswith('/') ? _drmuapi : src_root / _drmuapi
+_zstd = get_option('zstd_dir')
+zstd_dir = _zstd.startswith('/') ? _zstd : src_root / _zstd
 
 start_o = cactlib / 'build-meson' / 'start.o'
 clibc_so = cactlib / 'build-meson' / 'clibc.so'
@@ -89,7 +91,7 @@ apps = [
   'tac', 'shuf', 'split', 'fold', 'paste',
   'test', 'expr', 'factor',
   'xargs', 'timeout', 'pidof', 'killall', 'lscpu', 'mountpoint', 'truncate',
-  'more', 'cal', 'tree', 'tar', 'nc', 'dns',
+  'more', 'cal', 'tree', 'tar', 'nc', 'dns', 'firmextr',
   # cactsole bridge tools: they send requests to the shell over $CACT_CTL_FD
   # (see common/ex_shell.c) instead of being shell builtins.
   'cd', 'export', 'unset', 'exit', 'jobs', 'fg', 'bg', 'help',
@@ -143,10 +145,34 @@ common_lib = static_library('common',
   # compile against the DRM uapi headers.
   c_args: c_args + ['-I' + drmuapi])
 
+# firmextr streams the compressed localrepo archive, so it links the zstd
+# decompressor vendored in the kernel tree (same sources, -w: third-party code).
+zstd_lib = static_library('cact-zstd-user',
+  files(
+    zstd_dir / 'common/debug.c',
+    zstd_dir / 'common/entropy_common.c',
+    zstd_dir / 'common/error_private.c',
+    zstd_dir / 'common/fse_decompress.c',
+    zstd_dir / 'common/zstd_common.c',
+    zstd_dir / 'decompress/huf_decompress.c',
+    zstd_dir / 'decompress/zstd_ddict.c',
+    zstd_dir / 'decompress/zstd_decompress.c',
+    zstd_dir / 'decompress/zstd_decompress_block.c',
+    zstd_dir / 'xxhash.c',
+  ),
+  c_args: c_args + ['-I' + zstd_dir, '-w'])
+
 app_bins = []
 foreach app : apps
   sources = files(app / 'main.c')
   use_common = true
+  app_c_args = c_args
+  extra_libs = []
+  if app == 'firmextr'
+    sources += files('firmextr/firmextr.c')
+    app_c_args += ['-I' + zstd_dir]
+    extra_libs += [zstd_lib]
+  endif
   if standalone_tools.has_key(app)
     sources += files(app / standalone_tools[app])
     use_common = false
@@ -156,7 +182,7 @@ foreach app : apps
   # cact-test and the stage step installs it under its real name.
   outname = (app == 'test') ? 'cact-test' : app
 
-  app_lib = static_library('app-' + app.underscorify(), sources, c_args: c_args)
+  app_lib = static_library('app-' + app.underscorify(), sources, c_args: app_c_args)
 
   link_cmd = [ld, '-m', 'elf_i386', '-pie', '--dynamic-linker=/lib/ld.so',
               '--hash-style=both', '-nostdlib', '--gc-sections',
@@ -166,6 +192,7 @@ foreach app : apps
   if use_common
     link_cmd += common_lib
   endif
+  link_cmd += extra_libs
   link_cmd += ['--no-whole-archive', clibc_so]
 
   app_bins += custom_target('bin-' + app.underscorify(),
