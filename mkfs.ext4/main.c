@@ -66,8 +66,13 @@ static uint64_t probe_capacity(void) {
             if (rd512(mid, tmp) == 0) lo = mid;
             else hi = mid;
         }
+        return (lo + 1) * 512;   /* bytes */
     }
-    return (lo + 1) * 512;
+    /* The doubling ended on the cap, not on a failed read, and MAX_LBA is
+     * still readable: the disk runs past what a 32-bit byte offset addresses.
+     * Falling through to `lo + 1` here reported every disk over 2 GiB as a
+     * 1 GiB one, because lo is the last probe step (1 GiB), not the end. */
+    return (uint64_t)(MAX_LBA + 1) * 512;
 }
 
 static void usage(void) {
@@ -122,8 +127,16 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    /* Size the volume from the size the kernel reports for the node whenever
+     * there is one.  The devfs publishes a block device's capacity as
+     * max_lba*512 — exactly the bound the block layer enforces on every
+     * read/write — so a volume built from it can never claim space the
+     * device cannot address.  Probing by reading cannot see that bound: a
+     * read past the end comes back short (the VFS clamps it), so a
+     * mis-measured volume would fail at the first block past the end. */
     uint64_t bytes;
-    if (stat(dev, &st) == 0 && S_ISREG(st.st_mode)) {
+    if (stat(dev, &st) == 0 &&
+        (S_ISREG(st.st_mode) || S_ISBLK(st.st_mode)) && st.st_size > 0) {
         bytes = (uint64_t)st.st_size;
     } else {
         bytes = probe_capacity();

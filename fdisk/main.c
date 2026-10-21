@@ -164,8 +164,13 @@ static uint64_t probe_capacity(void) {
             if (rd512(mid, tmp) == 0) lo = mid;
             else hi = mid;
         }
+        return lo + 1;   /* sectors */
     }
-    return lo + 1;   /* sectors */
+    /* The doubling ended on the cap, not on a failed read, and MAX_LBA is
+     * still readable: the disk runs past what a 32-bit byte offset addresses.
+     * Falling through to `lo + 1` here reported every disk over 2 GiB as a
+     * 1 GiB one, because lo is the last probe step (1 GiB), not the end. */
+    return MAX_LBA + 1;
 }
 
 static int try_stat(const char *path) {
