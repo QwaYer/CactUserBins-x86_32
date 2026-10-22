@@ -609,6 +609,11 @@ static void render(void) {
     char pos[24];
     int n = snprintf(pos, sizeof(pos), "\033[%d;%dH", cur_row, cur_col);
     write(STDOUT_FILENO, pos, (unsigned)n);
+
+    /* Every row has just been drawn, so the row cache now matches the screen:
+     * re-arm it here, or invalidate_rows() would leave the cache permanently
+     * off and every keystroke would rewrite the whole screen. */
+    rcache_valid = 1;
 }
 
 /* ------------------------------------------------------------- navigation */

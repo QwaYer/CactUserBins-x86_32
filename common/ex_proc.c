@@ -199,8 +199,9 @@ int cact_ub_umount(char **argv, int argc) {
 
 static const char lsmod_usage[] =
     "usage: lsmod\n"
-    "List loaded modules from /proc/modules (filesystem modules and resident\n"
-    "PCI kernel modules).\n";
+    "List loaded modules from /proc/modules (filesystem, USB and resident PCI\n"
+    "kernel modules) with the size of each module's resident image and how many\n"
+    "users it has (mounted devices, claimed USB devices, served PCI functions).\n";
 
 static const char *after_colon(const char *line) {
     const char *c = strchr(line, ':');
