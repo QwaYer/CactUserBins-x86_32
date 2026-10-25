@@ -444,8 +444,8 @@ int main(int argc, char **argv) {
             printf("wljoin: status request failed (errno=%d)\n", errno);
             return 1;
         }
-        printf("wljoin: link=%d last_error=%d ccmp_selftest=%d beacon=%u deauth=%u\n",
-               (int)st.linked, (int)st.last_error, (int)st.ccmp_selftest,
+        printf("wljoin: link=%d last_error=%d beacon=%u deauth=%u\n",
+               (int)st.linked, (int)st.last_error,
                (unsigned)st.beacon_rx, (unsigned)st.deauth_rx);
         printf("wljoin: tx data=%u group=%u fail=%u drop(noassoc=%u nokey=%u)\n",
                (unsigned)st.tx_data, (unsigned)st.tx_group,
